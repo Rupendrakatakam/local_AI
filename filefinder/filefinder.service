@@ -1,0 +1,14 @@
+[Unit]
+Description=FileChat Indexer — real-time home directory file index
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/Rupendra/local_AI/filefinder/indexer.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
