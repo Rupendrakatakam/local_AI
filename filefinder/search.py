@@ -1,14 +1,19 @@
 """
-search.py — Shared search logic used by both chat.py and the GUI.
-  1. Quick path: pure SQLite fuzzy match (no LLM, instant)
-  2. Smart path: phi3:mini parses natural language → SQLite
-  3. Cascading relaxation: tight → relaxed → OR-mode fallback
+search.py — Shared search logic.
+Fixes:
+  - Category detection: "image" → jpg/png/jpeg/etc, "video" → mp4/etc
+  - Zero-byte files excluded at query time (covers pre-existing DB entries)
+  - Cascading relaxation preserved
+Batch 2:
+  - #14: Stale file background cleanup
 """
 
 import json
+import os
 import re
 import sqlite3
 import requests
+import threading
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
@@ -17,14 +22,33 @@ DB_PATH    = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL      = "phi3:mini"
 
+# ── Category → extension map ──────────────────────────────────────────────────
+CATEGORY_MAP: dict[str, list[str]] = {
+    "image":    ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "ico"],
+    "photo":    ["jpg", "jpeg", "png", "heic", "raw", "cr2"],
+    "video":    ["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm"],
+    "audio":    ["mp3", "wav", "flac", "aac", "ogg", "m4a"],
+    "document": ["pdf", "doc", "docx", "odt", "txt", "md", "rtf"],
+    "pdf":      ["pdf"],
+    "code":     ["py", "js", "ts", "cpp", "c", "h", "java", "rs", "go", "sh"],
+    "script":   ["py", "sh", "bash", "zsh", "fish"],
+    "spreadsheet": ["xlsx", "xls", "csv", "ods"],
+    "archive":  ["zip", "tar", "gz", "bz2", "xz", "7z", "rar"],
+}
+
+# Words that signal a category, not a keyword
+CATEGORY_WORDS = set(CATEGORY_MAP.keys()) | {
+    "images", "photos", "videos", "audios", "documents", "scripts", "archives"
+}
+
 
 @dataclass
 class FileResult:
     path: str
     name: str
     extension: str
-    size: int       # bytes
-    mtime: float    # unix timestamp
+    size: int
+    mtime: float
 
     @property
     def size_human(self) -> str:
@@ -36,47 +60,52 @@ class FileResult:
             return f"{self.size/1024**2:.1f} MB"
 
 
-# ── Keyword normalization ──────────────────────────────────────────────────────
-def _normalize_keywords(keywords: list[str]) -> list[str]:
+# ── Category detection ────────────────────────────────────────────────────────
+def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
     """
-    Split multi-word keywords into atomic tokens and normalize delimiters.
+    Scan words for category hints.
+    Returns (extensions_list_or_None, remaining_keywords).
+    """
+    for word in words:
+        w = word.lower().rstrip("s")   # "images" → "image"
+        if w in CATEGORY_MAP:
+            remaining = [kw for kw in words if kw.lower().rstrip("s") != w]
+            return CATEGORY_MAP[w], remaining
+        if word.lower() in CATEGORY_MAP:
+            remaining = [kw for kw in words if kw.lower() != word.lower()]
+            return CATEGORY_MAP[word.lower()], remaining
+    return None, words
 
-    'online estimation' → ['online', 'estimation']
-    'On-Line_Estimation' → ['on', 'line', 'estimation']
-    'CamelCase' → ['camel', 'case']
-    """
+
+# ── Keyword normalization ─────────────────────────────────────────────────────
+def _normalize_keywords(keywords: list[str]) -> list[str]:
     atoms = []
     for kw in keywords:
-        # Split on spaces, underscores, hyphens, dots
         parts = re.split(r'[\s_\-\.]+', kw)
-        # Also split camelCase boundaries: "OnLine" → ["On", "Line"]
         expanded = []
         for p in parts:
             expanded.extend(re.sub(r'([a-z])([A-Z])', r'\1 \2', p).split())
         atoms.extend([a.lower() for a in expanded if len(a) >= 2])
-    # Deduplicate while preserving order
     seen = set()
     return [a for a in atoms if not (a in seen or seen.add(a))]
 
 
-# ── SQLite helpers ─────────────────────────────────────────────────────────────
-def _db_search(keywords: list[str], extension: Optional[str],
-               directory: Optional[str] = None, limit: int = 15,
+# ── SQLite helpers ────────────────────────────────────────────────────────────
+def _db_search(keywords: list[str],
+               extensions: Optional[list[str]],
+               directory: Optional[str] = None,
+               limit: int = 15,
                use_or: bool = False) -> list[FileResult]:
-    """
-    Search with delimiter-normalized atomic keywords.
-    use_or=True switches from AND to OR matching (for final fallback).
-    """
     if not DB_PATH.exists():
         return []
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
-    # Atomize keywords so "online estimation" → ["online", "estimation"]
     atoms = _normalize_keywords(keywords)
-
     clauses, params = [], []
+
+    # Keyword clauses
     if atoms:
         kw_clauses = []
         for atom in atoms:
@@ -85,40 +114,65 @@ def _db_search(keywords: list[str], extension: Optional[str],
         joiner = " OR " if use_or else " AND "
         clauses.append(f"({joiner.join(kw_clauses)})")
 
-    if extension:
-        clauses.append("extension = ?")
-        params.append(extension.lstrip(".").lower())
+    # Extension filter — supports multi-extension (category search)
+    if extensions:
+        placeholders = ",".join("?" * len(extensions))
+        clauses.append(f"extension IN ({placeholders})")
+        params.extend([e.lower() for e in extensions])
 
+    # Directory scope
     if directory:
         clauses.append("path LIKE ?")
         params.append(f"{directory}%")
 
-    where = " AND ".join(clauses) if clauses else "1=1"
+    # Always exclude zero-byte files (covers pre-existing DB entries)
+    clauses.append("size > 0")
+
+    where = " AND ".join(clauses) if clauses else "size > 0"
     rows = conn.execute(
-        f"SELECT path, name, extension, size, mtime FROM files WHERE {where} ORDER BY mtime DESC LIMIT ?",
+        f"SELECT path, name, extension, size, mtime FROM files "
+        f"WHERE {where} ORDER BY mtime DESC LIMIT ?",
         params + [limit],
     ).fetchall()
     conn.close()
-
     return [FileResult(**dict(r)) for r in rows]
 
 
-# ── Ollama intent parser ───────────────────────────────────────────────────────
+# ── Stale file background cleanup (#14) ──────────────────────────────────────
+def _cleanup_stale(paths: list[str]) -> None:
+    """Remove DB entries for files that no longer exist. Runs in background."""
+    stale = [p for p in paths if not os.path.exists(p)]
+    if not stale or not DB_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in stale])
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _filter_and_clean(results: list[FileResult]) -> list[FileResult]:
+    """Remove stale entries from results and schedule DB cleanup."""
+    live = [r for r in results if os.path.exists(r.path)]
+    stale_paths = [r.path for r in results if not os.path.exists(r.path)]
+    if stale_paths:
+        threading.Thread(target=_cleanup_stale, args=(stale_paths,), daemon=True).start()
+    return live
+
+
+# ── Ollama intent parser ──────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a file-search intent extractor.
 Given a user query, return ONLY a JSON object — no explanation, no markdown.
 Fields:
   "keywords"  : list of individual filename keywords (strings, lowercase).
-                Split compound terms into separate entries (e.g. "on-line estimation" → ["on-line", "estimation"]).
-                Do NOT include conversational words (find, where, my, the, can, you, show, me).
-                Do NOT include directory/folder/path words.
-  "extension" : file extension without dot, e.g. "py", "pdf", or null
-  "directory" : directory or folder name hint from query (e.g. "Downloads", "Documents") or null
-Example input : "find the tax report pdf in Downloads"
-Example output: {"keywords": ["tax", "report"], "extension": "pdf", "directory": "Downloads"}
-Example input : "where is my resume"
-Example output: {"keywords": ["resume"], "extension": null, "directory": null}
-Example input : "can you find on-line estimation pdf"
-Example output: {"keywords": ["on-line", "estimation"], "extension": "pdf", "directory": null}"""
+                Split compound terms. Do NOT include: find, where, my, the, can, you, show, me, image, photo, video, audio, document, file, named, called.
+  "extension" : single file extension without dot e.g. "py", "pdf", or null. Use null if the user says "image", "photo", "video" — those are categories not extensions.
+  "directory" : folder name hint (e.g. "Downloads") or null
+Example: "find the tax report pdf in Downloads" → {"keywords": ["tax", "report"], "extension": "pdf", "directory": "Downloads"}
+Example: "where is my resume" → {"keywords": ["resume"], "extension": null, "directory": null}
+Example: "can you find image named rupendra" → {"keywords": ["rupendra"], "extension": null, "directory": null}"""
 
 
 def _parse_intent(query: str) -> dict:
@@ -129,106 +183,101 @@ def _parse_intent(query: str) -> dict:
             timeout=15,
         )
         raw = resp.json()["response"].strip()
-        # Extract JSON robustly
         start, end = raw.find("{"), raw.rfind("}") + 1
         if start != -1 and end:
             return json.loads(raw[start:end])
     except Exception:
         pass
-    # Fallback — treat every word as a keyword, strip conversational filler
     filler = {"can", "you", "find", "the", "where", "is", "my", "show", "me",
-              "a", "an", "that", "this", "named", "called", "in"}
+              "a", "an", "that", "this", "named", "called", "in", "image",
+              "photo", "video", "audio", "document", "file"}
     words = [w for w in query.lower().split() if w not in filler and len(w) >= 2]
     return {"keywords": words or query.split(), "extension": None, "directory": None}
 
 
-# ── Directory hint resolver ───────────────────────────────────────────────────
 def _resolve_directory(hint: Optional[str]) -> Optional[str]:
-    """Expand a directory hint like 'Downloads' to an absolute path."""
     if not hint:
         return None
     if hint.startswith("/"):
         return hint
-    if hint.startswith("~"):
-        return str(Path(hint).expanduser())
-    # Assume it's relative to home
     return str(Path.home() / hint)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 def quick_search(query: str, limit: int = 15) -> list[FileResult]:
-    """Fast SQLite-only search — no LLM. Good for exact/partial names."""
-    return _db_search([query], extension=None, limit=limit)
-
-
-def smart_search(query: str, limit: int = 15) -> list[FileResult]:
-    """NL query → phi3:mini intent → SQLite search."""
-    intent = _parse_intent(query)
-    keywords  = intent.get("keywords") or [query]
-    extension = intent.get("extension")
-    directory = _resolve_directory(intent.get("directory"))
-    return _db_search(keywords, extension, directory, limit)
+    results = _db_search([query], extensions=None, limit=limit)
+    return _filter_and_clean(results)
 
 
 def search(query: str, limit: int = 15) -> list[FileResult]:
     """
-    Cascading search with progressive relaxation:
-      1. Bare filename? → quick_search (instant, no LLM)
-      2. LLM-assisted smart search (all keywords AND)
-      3. Relax: drop extension filter
-      4. Relax: drop directory filter
-      5. Relax: top-2 most specific keywords only
-      6. Final: OR-mode search (any keyword matches)
+    Cascading search:
+      0. Pre-pass: detect category words (image/video/audio/etc)
+      1. Bare filename → quick_search
+      2. LLM intent → SQLite (AND mode)
+      3. Relax: drop extension
+      4. Relax: drop directory
+      5. Relax: top-2 keywords only
+      6. Final: OR mode
     """
     stripped = query.strip()
 
-    # 1. Quick path for bare filenames (no spaces)
+    # 0. Detect category in original query before passing to LLM
+    query_words = stripped.lower().split()
+    category_extensions, non_category_words = _detect_category(query_words)
+
+    # 1. Quick path for bare filenames
     if " " not in stripped:
         results = quick_search(stripped, limit)
         if results:
             return results
 
-    # 2. LLM-assisted search
-    intent = _parse_intent(stripped)
-    keywords  = intent.get("keywords") or stripped.split()
-    extension = intent.get("extension")
-    directory = _resolve_directory(intent.get("directory"))
+    # 2. LLM intent
+    intent     = _parse_intent(stripped)
+    keywords   = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
+    extension  = intent.get("extension")
+    directory  = _resolve_directory(intent.get("directory"))
 
-    results = _db_search(keywords, extension, directory, limit)
+    # Merge: category extensions override single LLM extension
+    extensions = category_extensions if category_extensions else ([extension] if extension else None)
+
+    # Remove category words from keywords
+    if category_extensions:
+        _, keywords = _detect_category(keywords)
+
+    results = _db_search(keywords, extensions, directory, limit)
     if results:
-        return results
+        return _filter_and_clean(results)
 
-    # 3. Relax: drop extension filter
-    if extension:
+    # 3. Drop extension
+    if extensions:
         results = _db_search(keywords, None, directory, limit)
         if results:
-            return results
+            return _filter_and_clean(results)
 
-    # 4. Relax: drop directory filter
+    # 4. Drop directory
     if directory:
-        results = _db_search(keywords, extension, None, limit)
+        results = _db_search(keywords, extensions, None, limit)
         if results:
-            return results
-        # Also try without both extension and directory
-        if extension:
+            return _filter_and_clean(results)
+        if extensions:
             results = _db_search(keywords, None, None, limit)
             if results:
-                return results
+                return _filter_and_clean(results)
 
-    # 5. Relax: keep only the 2 longest (most specific) keywords
+    # 5. Top-2 most specific keywords
     if len(keywords) > 2:
         top_kw = sorted(keywords, key=len, reverse=True)[:2]
-        results = _db_search(top_kw, extension, None, limit)
+        results = _db_search(top_kw, extensions, None, limit)
         if results:
-            return results
+            return _filter_and_clean(results)
 
-    # 6. Final: OR-mode (any keyword matches)
-    results = _db_search(keywords, extension, None, limit, use_or=True)
-    return results
+    # 6. OR mode fallback
+    results = _db_search(keywords, extensions, None, limit, use_or=True)
+    return _filter_and_clean(results)
 
 
 def db_stats() -> dict:
-    """Return basic stats about the index."""
     if not DB_PATH.exists():
         return {"total": 0, "db_path": str(DB_PATH), "ready": False}
     conn = sqlite3.connect(DB_PATH)
