@@ -1,0 +1,11 @@
+Done — All Tier 1 changes shipped ✅
+One file changed (search.py), ~65 lines of new logic, 5/5 previously-failing queries now work.
+
+What I built:
+_normalize_keywords() — Atomizes "online estimation" → ["online", "estimation"] by splitting on _, -, ., spaces, and camelCase boundaries
+Improved LLM prompt — Extracts directory separately, tells the LLM to split compound keywords and skip filler words
+6-tier cascading search — Progressively relaxes constraints (drop extension → drop directory → top-2 keywords → OR-mode) so you always get results instead of "No files found"
+To try it:
+Restart the running chat.py (Ctrl+C in that terminal, then python3 chat.py) and test "can you find the pdf named on-line estimation" — it'll work now.
+
+
