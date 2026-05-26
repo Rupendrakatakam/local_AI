@@ -1,0 +1,42 @@
+1. You ❯ can you find the image named rupendra
+╭─────┬──────────────────────┬────────────────────────────────┬───────────┬─────
+│   # │ File Name            │ Path                           │      Size │ Modi
+├─────┼──────────────────────┼────────────────────────────────┼───────────┼─────
+│   1 │ Rupendra.jpg         │ ~/Downloads/Images/Rupendra.j… │   90.1 KB │ 2026
+│   2 │ Rupendra_.png        │ ~/Downloads/Images/Rupendra_.… │ 1010.5 KB │ 2026
+│   3 │ Rupendra_1.png       │ ~/Downloads/Images/Rupendra_1… │    4.9 MB │ 2026
+│   4 │ Rupendra.jpeg        │ ~/Rupendra/web_development/po… │  119.6 KB │ 2026
+│   5 │ git_init__home_rupe… │ ~/masterros2/uav/PX4-Autopilo… │       0 B │ 2026
+│   6 │ git_init__home_rupe… │ ~/masterros2/uav/PX4-Autopilo… │       0 B │ 2026
+│   7 │ Rupendra_imresizer.… │ ~/Downloads/Images/Rupendra_i… │   28.2 KB │ 2025
+│   8 │ Rupendra_.jpg        │ ~/Downloads/Images/Rupendra_.… │   23.5 KB │ 2025
+│   9 │ Intern-CV-format-Ru… │ ~/Downloads/Documents/Resume_… │   58.4 KB │ 2025
+│  10 │ AIML_sept15_offerle… │ ~/Downloads/Documents/Text_Mi… │  254.8 KB │ 2025
+│     │ KATAKAM.pdf          │ KATAKAM.pdf                    │           │     
+│  11 │ Rupendra_Katakam_Ce… │ ~/Downloads/Documents/Certifi… │  103.2 MB │ 2025
+│  12 │ Rupendra Katakam     │ ~/Downloads/Documents/Certifi… │  448.8 KB │ 2025
+│     │ Internship           │ Katakam Internship             │           │     
+│     │ Certificate.pdf      │ Certificate.pdf                │           │     
+│  13 │ Rupendra-Intership   │ ~/Downloads/Documents/Text_Mi… │  464.0 KB │ 2025
+│     │ Extension-Confirmat… │ Extension-Confirmation.pdf     │           │     
+│  14 │ Rupendra_Resume.docx │ ~/Downloads/Documents/Resume_… │   37.1 KB │ 2025
+│  15 │ Rupendra_Resume.pdf  │ ~/rupendra/work/Rupendra_Resu… │   95.7 KB │ 2025
+╰─────┴──────────────────────┴────────────────────────────────┴───────────┴─────
+  15 result(s) — /open N to open, /copy N to copy path
+
+ You ❯ /open 1
+Opening: ~/Downloads/Images/Rupendra.jpg
+ You ❯ 
+(eog:19811): EOG-WARNING **: 13:39:50.565: Thumbnail creation failed
+ You ❯ 
+ You ❯ /open 13
+Opening: ~/Downloads/Documents/Text_Misc/Rupendra-Intership 
+Extension-Confirmation.pdf
+ You ❯ 
+** (evince:19840): WARNING **: 13:40:06.385: Unimplemented annotation: POPPLER_ANNOT_FREE_TEXT.  It is a known issue and it might be implemented in the future.
+
+** (evince:19840): WARNING **: 13:40:06.429: Unimplemented annotation: POPPLER_ANNOT_FREE_TEXT.  It is a known issue and it might be implemented in the future.
+ You ❯
+
+
+ asked the model to fing image , it also returnerd the pdf file along with the Images
