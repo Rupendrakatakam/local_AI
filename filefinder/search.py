@@ -429,6 +429,15 @@ def _score_result(query_atoms: list[str], result: FileResult) -> float:
     depth = len(Path(result.path).parts) - 1
     score -= depth * 2
 
+    # Behavioral boost (Phase 3) — 0 to 40 points
+    try:
+        from behavior import get_rfm_boost, get_workspace_affinity, get_time_boost
+        score += get_rfm_boost(result.path)
+        score += get_workspace_affinity(result.path)
+        score += get_time_boost(result.path)
+    except ImportError:
+        pass
+
     return score
 
 
@@ -578,6 +587,20 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
       7. Fuzzy fallback (Batch 4)
     """
     stripped = query.strip()
+    
+    # 0. Alias check (Phase 3)
+    try:
+        from aliases import get_alias
+        alias_path = get_alias(stripped)
+        if alias_path:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            r = conn.execute("SELECT path, name, extension, size, mtime FROM files WHERE path=?", (alias_path,)).fetchone()
+            conn.close()
+            if r:
+                return [FileResult(**dict(r))], False
+    except ImportError:
+        pass
 
     # 0. Explicit type: syntax (#18) — e.g. "type:image rupendra"
     type_extensions, stripped = _extract_type_filter(stripped)

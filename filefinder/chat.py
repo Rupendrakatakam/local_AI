@@ -45,6 +45,7 @@ HELP_TEXT = """
   [yellow]/hidden[/yellow]       Toggle hidden files on/off
   [yellow]/service[/yellow]      Show indexer daemon status
   [yellow]/re <pattern>[/yellow] Regex search (case-insensitive)
+  [yellow]/alias[/yellow]         Manage shortcuts (set/rm/list)
   [yellow]/open N[/yellow]       Open result N in default app
   [yellow]/copy N[/yellow]       Copy path of result N to clipboard
   [yellow]exit[/yellow]          Quit
@@ -53,6 +54,7 @@ HELP_TEXT = """
 """
 
 _last_results: list[FileResult] = []
+_last_query:   str = ""
 _current_page: int = 0
 _total_pages:  int = 0
 
@@ -314,6 +316,11 @@ def open_result(idx: int) -> None:
     try:
         subprocess.Popen(["xdg-open", path])
         console.print(f"[green]Opening:[/green] {tilde_path(path)}")
+        try:
+            from behavior import record_open
+            record_open(_last_query, path)
+        except ImportError:
+            pass
     except FileNotFoundError:
         console.print("[red]xdg-open not found.[/red]")
 
@@ -330,6 +337,11 @@ def copy_result(idx: int) -> None:
         try:
             if subprocess.run([tool] + args, input=path.encode(), timeout=3).returncode == 0:
                 console.print(f"[green]Copied:[/green] {tilde_path(path)}")
+                try:
+                    from behavior import record_copy
+                    record_copy(path)
+                except ImportError:
+                    pass
                 return
         except FileNotFoundError:
             continue
@@ -402,6 +414,14 @@ def main() -> None:
             state = toggle_hidden()
             console.print(f"  Hidden files: {'[cyan]ON[/cyan]' if state else '[dim]OFF[/dim]'}")
             continue
+        if low == "/privacy clear":
+            try:
+                from behavior import privacy_clear
+                privacy_clear()
+                console.print("[green]✓ Behavioral data cleared.[/green]")
+            except ImportError:
+                console.print("[yellow]behavior module not available[/yellow]")
+            continue
         if low == "/service":
             show_service()
             continue
@@ -412,6 +432,31 @@ def main() -> None:
         if low.startswith("/copy"):
             parts = low.split()
             copy_result(int(parts[1])) if len(parts) == 2 and parts[1].isdigit() else console.print("[yellow]Usage: /copy N[/yellow]")
+            continue
+
+        if low.startswith("/alias"):
+            parts = query.split(maxsplit=3)
+            try:
+                from aliases import set_alias, get_alias, remove_alias, list_aliases
+                if len(parts) >= 2 and parts[1].lower() == "list":
+                    aliases = list_aliases()
+                    if aliases:
+                        for k, v in aliases.items():
+                            console.print(f"  [cyan]{k}[/cyan] -> {v}")
+                    else:
+                        console.print("  [dim]No aliases set.[/dim]")
+                elif len(parts) >= 3 and parts[1].lower() == "rm":
+                    if remove_alias(parts[2]):
+                        console.print(f"  [green]Removed alias '{parts[2]}'[/green]")
+                    else:
+                        console.print(f"  [yellow]Alias '{parts[2]}' not found[/yellow]")
+                elif len(parts) >= 4 and parts[1].lower() == "set":
+                    set_alias(parts[2], parts[3])
+                    console.print(f"  [green]Alias '{parts[2]}' set to {parts[3]}[/green]")
+                else:
+                    console.print("  [yellow]Usage: /alias set NAME PATH | /alias rm NAME | /alias list[/yellow]")
+            except ImportError:
+                console.print("[yellow]aliases module not available[/yellow]")
             continue
 
         # (#20) Regex bypass
@@ -425,6 +470,8 @@ def main() -> None:
             display_results(results, session, is_fuzzy=False)
             continue
 
+        global _last_query
+        _last_query = query
         with console.status("[cyan]Searching…[/cyan]", spinner="dots"):
             results, is_fuzzy = search(query)
 
