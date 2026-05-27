@@ -11,6 +11,7 @@ import time
 import sqlite3
 import requests
 import threading
+from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
@@ -106,7 +107,7 @@ def _normalize_keywords(keywords: list[str]) -> list[str]:
         expanded = []
         for p in parts:
             expanded.extend(re.sub(r'([a-z])([A-Z])', r'\1 \2', p).split())
-        atoms.extend([a.lower() for a in expanded if len(a) >= 2])
+        atoms.extend([a.lower() for a in expanded if len(a) >= 1])
     seen = set()
     return [a for a in atoms if not (a in seen or seen.add(a))]
 
@@ -191,6 +192,112 @@ _DELIM_RE = re.compile(r'[_\-\.\s]+')
 def _normalize_for_fuzzy(name: str) -> str:
     """Strip filename delimiters for fuzzy comparison."""
     return _DELIM_RE.sub(' ', name).lower().strip()
+
+
+def _fts_search(keywords: list[str],
+                extensions: Optional[list[str]],
+                directory: Optional[str] = None,
+                limit: int = 15) -> list[FileResult]:
+    if not DB_PATH.exists():
+        return []
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    atoms = _normalize_keywords(keywords)
+    if not atoms:
+        conn.close()
+        return []
+
+    clean_atoms = []
+    for a in atoms:
+        clean = a.replace('"', '').strip()
+        if clean:
+            clean_atoms.append(f'"{clean}"')
+
+    if not clean_atoms:
+        conn.close()
+        return []
+
+    match_query = " ".join(clean_atoms)
+    
+    clauses = ["files_fts MATCH ?"]
+    params = [match_query]
+
+    if extensions:
+        placeholders = ",".join("?" * len(extensions))
+        clauses.append(f"files.extension IN ({placeholders})")
+        params.extend([e.lower() for e in extensions])
+
+    if directory:
+        clauses.append("files.path LIKE ?")
+        params.append(f"{directory}%")
+
+    clauses.append("files.size > 0")
+
+    if not _show_hidden:
+        clauses.append("files.name NOT LIKE '.%'")
+
+    where = " AND ".join(clauses)
+    
+    query_str = (
+        f"SELECT files.path, files.name, files.extension, files.size, files.mtime "
+        f"FROM files_fts "
+        f"JOIN files ON files.rowid = files_fts.rowid "
+        f"WHERE {where} ORDER BY bm25(files_fts) LIMIT ?"
+    )
+    
+    try:
+        rows = conn.execute(query_str, params + [limit]).fetchall()
+        results = [FileResult(**dict(r)) for r in rows]
+    except sqlite3.OperationalError:
+        results = []
+    finally:
+        conn.close()
+        
+    return results
+
+
+def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
+    if not DB_PATH.exists():
+        return []
+        
+    q_norm = _normalize_for_fuzzy(query)
+    if len(q_norm) < 3:
+        return []
+        
+    q_trigrams = [q_norm[i:i+3] for i in range(len(q_norm)-2)]
+    if not q_trigrams:
+        return []
+        
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    
+    placeholders = ",".join("?" * len(q_trigrams))
+    hidden_clause = "AND files.name NOT LIKE '.%'" if not _show_hidden else ""
+    
+    query_str = f"""
+        SELECT files.path, files.name, files.extension, files.size, files.mtime,
+               (2.0 * count(*) / (? + max(1, length(files.name) - 2))) as similarity
+        FROM name_trigrams
+        JOIN files ON files.rowid = name_trigrams.file_id
+        WHERE name_trigrams.trigram IN ({placeholders}) AND files.size > 0 {hidden_clause}
+        GROUP BY name_trigrams.file_id
+        HAVING similarity >= 0.35
+        ORDER BY similarity DESC, files.mtime DESC
+        LIMIT ?
+    """
+    
+    try:
+        params = [len(q_trigrams)] + q_trigrams + [limit]
+        rows = conn.execute(query_str, params).fetchall()
+        results = [FileResult(**dict(r)) for r in rows]
+    except sqlite3.OperationalError:
+        results = []
+    finally:
+        conn.close()
+        
+    return results
 
 
 def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
@@ -287,6 +394,24 @@ def _score_result(query_atoms: list[str], result: FileResult) -> float:
     matched = sum(1 for a in query_atoms if a in name_lower or a in name_norm)
     score += (matched / max(len(query_atoms), 1)) * 50
 
+    # Path component keyword search / match bonus (0–10 points)
+    path_parts = Path(result.path).parent.parts
+    path_matched = 0
+    for a in query_atoms:
+        for part in path_parts:
+            if a in part.lower():
+                path_matched += 1
+                break
+    if query_atoms:
+        score += (path_matched / len(query_atoms)) * 10
+
+    # Exact name match bonus (30 points)
+    base_name_lower = Path(result.name).stem.lower()
+    for a in query_atoms:
+        if a == base_name_lower or a == name_lower:
+            score += 30
+            break
+
     # Prefix bonus (0–20 points) — filename starts with a query keyword
     for a in query_atoms:
         if name_lower.startswith(a) or name_norm.startswith(a):
@@ -299,6 +424,10 @@ def _score_result(query_atoms: list[str], result: FileResult) -> float:
     # Recency bonus (0–15 points)
     days_old = (time.time() - result.mtime) / 86400
     score += max(0, 15 - days_old / 30)
+
+    # Path depth penalty (-2 points per directory level)
+    depth = len(Path(result.path).parts) - 1
+    score -= depth * 2
 
     return score
 
@@ -323,6 +452,7 @@ Examples:
   "find image named rupendra" → {"keywords": ["rupendra"], "extension": null, "directory": null}"""
 
 
+@lru_cache(maxsize=512)
 def _parse_intent(query: str) -> dict:
     try:
         resp = requests.post(
@@ -353,15 +483,17 @@ def _resolve_directory(hint: Optional[str]) -> Optional[str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 def quick_search(query: str, limit: int = 15) -> list[FileResult]:
-    results = _db_search([query], extensions=None, limit=limit)
+    results = _fts_search([query], extensions=None, limit=limit)
+    if not results:
+        results = _db_search([query], extensions=None, limit=limit)
     return _filter_and_clean(results)
 
 
 def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     """
-    Cascading search with fuzzy fallback and relevance scoring.
+    Cascading search with FTS5, trigram fallback, fuzzy fallback and relevance scoring.
     Returns (results, is_fuzzy) — is_fuzzy=True when results came from
-    the rapidfuzz fallback layer (approximate matches).
+    the trigram or rapidfuzz fallback layers (approximate matches).
 
     Tiers:
       0. Parse type: filter (#18)
@@ -373,6 +505,7 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
       5. Relax: top-2 keywords
       6. OR mode fallback
       6.5 Sub-keyword expansion (Batch 4)
+      6.6 Trigram fuzzy fallback (Update 11)
       7. Fuzzy fallback (Batch 4)
     """
     stripped = query.strip()
@@ -407,30 +540,40 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     # Build atoms once for scoring
     atoms = _normalize_keywords(keywords)
 
-    results = _db_search(keywords, extensions, directory, limit)
+    results = _fts_search(keywords, extensions, directory, limit)
+    if not results:
+        results = _db_search(keywords, extensions, directory, limit)
     if results:
         return _rerank(atoms, _filter_and_clean(results)), False
 
     # 3. Drop extension
     if extensions:
-        results = _db_search(keywords, None, directory, limit)
+        results = _fts_search(keywords, None, directory, limit)
+        if not results:
+            results = _db_search(keywords, None, directory, limit)
         if results:
             return _rerank(atoms, _filter_and_clean(results)), False
 
     # 4. Drop directory
     if directory:
-        results = _db_search(keywords, extensions, None, limit)
+        results = _fts_search(keywords, extensions, None, limit)
+        if not results:
+            results = _db_search(keywords, extensions, None, limit)
         if results:
             return _rerank(atoms, _filter_and_clean(results)), False
         if extensions:
-            results = _db_search(keywords, None, None, limit)
+            results = _fts_search(keywords, None, None, limit)
+            if not results:
+                results = _db_search(keywords, None, None, limit)
             if results:
                 return _rerank(atoms, _filter_and_clean(results)), False
 
     # 5. Top-2 keywords
     if len(keywords) > 2:
         top_kw = sorted(keywords, key=len, reverse=True)[:2]
-        results = _db_search(top_kw, extensions, None, limit)
+        results = _fts_search(top_kw, extensions, None, limit)
+        if not results:
+            results = _db_search(top_kw, extensions, None, limit)
         if results:
             return _rerank(atoms, _filter_and_clean(results)), False
 
@@ -447,6 +590,11 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         results = _filter_and_clean(results)
         if results:
             return _rerank(atoms, results), False
+
+    # 6.6 Trigram fuzzy fallback (Update 11)
+    results = _trigram_search(stripped, limit)
+    if results:
+        return _filter_and_clean(results), True
 
     # 7. Fuzzy fallback — handles typos and fragments
     results = _fuzzy_search(stripped, limit)

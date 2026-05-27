@@ -1,0 +1,102 @@
+# FileChat v2 Tasks
+
+- [x] **Phase 1: Foundation & Search Quality**
+  - [x] **Batch 1A: Core Search Engine**
+    - [x] Update 1: Batch commit during full_scan
+    - [x] Update 2: FTS5 virtual table creation
+    - [x] Update 3: FTS5 INSERT trigger
+    - [x] Update 4: FTS5 DELETE trigger
+    - [x] Update 5: FTS5 UPDATE trigger
+    - [x] Update 6: Trigram table + index creation
+    - [x] Update 7: Populate trigrams on upsert
+    - [x] Update 8: Secure DB file permissions
+    - [x] Update 9: Security entries in .filefinder_ignore
+    - [x] Update 10: FTS5 search function
+    - [x] Update 11: Trigram fuzzy search function
+    - [x] Update 12: Route primary search to FTS5
+  - [x] **Batch 1B: Scoring & Polish**
+    - [x] Update 13: Fix single-char token filter
+    - [x] Update 14: LLM intent result caching (in-session)
+    - [x] Update 15: Path-component keyword search
+    - [x] Update 16: Relevance score — exact name match
+    - [x] Update 17: Relevance score — path depth penalty
+    - [x] Update 18: Rapidfuzz install guard
+    - [x] Update 19: Handle is_fuzzy flag in display (tuple unpacking bug first)
+    - [x] Update 20: One-time FTS5 rebuild for existing DBs
+
+- [ ] **Phase 2: Semantic & Multimodal**
+  - [ ] **Batch 2A: Embedding Pipeline**
+    - [ ] Update 21: embedder.py module scaffold
+    - [ ] Update 22: LanceDB schema + table creation
+    - [ ] Update 23: Text extractor — plain text files
+    - [ ] Update 24: Text extractor — PDF (pymupdf)
+    - [ ] Update 25: Text extractor — DOCX (mammoth)
+    - [ ] Update 26: Chunker function
+    - [ ] Update 27: MiniLM batch embedder
+    - [ ] Update 28: LanceDB upsert function
+    - [ ] Update 29: Background embedding worker
+    - [ ] Update 30: Embedding queue integration in indexer
+  - [ ] **Batch 2B: Search Fusion & Extras**
+    - [ ] Update 31: Semantic search function
+    - [ ] Update 32: RRF hybrid fusion
+    - [ ] Update 33: Query router — keyword vs semantic
+    - [ ] Update 34: CLIP model loader
+    - [ ] Update 35: Image embedding function
+    - [ ] Update 36: OCR worker for scanned PDFs
+    - [ ] Update 37: Embedding progress tracker
+    - [ ] Update 38: Semantic search status in stats
+
+- [ ] **Phase 3: Behavioral & Autonomy**
+  - [ ] **Batch 3A: Behavior Tracking**
+    - [ ] Update 39: behavior.db schema
+    - [ ] Update 40: Record open events
+    - [ ] Update 41: Record copy events
+    - [ ] Update 42: RFM score calculator
+    - [ ] Update 43: Workspace affinity tracker
+    - [ ] Update 44: Integrate RFM boost into _score_result
+    - [ ] Update 45: Time-of-day pattern detector
+  - [ ] **Batch 3B: Smart Suggestions**
+    - [ ] Update 46: Query suggestion from history
+    - [ ] Update 47: Auto-alias system
+    - [ ] Update 48: /alias command
+    - [ ] Update 49: Alias lookup in search()
+    - [ ] Update 50: Weekly index health report
+    - [ ] Add `/privacy clear` command to wipe behavior.db (approved requirement)
+
+- [ ] **Phase 4: GUI & UX Surface**
+  - [ ] **Batch 4A: Flask Backend + React Shell**
+    - [ ] Update 51: gui.py Flask backend scaffold
+    - [ ] Update 52: Flask /search endpoint
+    - [ ] Update 53: Flask /open endpoint
+    - [ ] Update 54: Flask /preview endpoint
+    - [ ] Update 55: React app scaffold (index.html)
+    - [ ] Update 56: Search bar component
+    - [ ] Update 57: Results table component
+    - [ ] Update 58: File type icon set
+  - [ ] **Batch 4B: Preview + Polish**
+    - [ ] Update 59: Confidence score bar
+    - [ ] Update 60: Preview panel — text snippet
+    - [ ] Update 61: Preview panel — image thumbnail
+    - [ ] Update 62: Preview panel — PDF first page
+    - [ ] Update 63: Keyboard shortcut system
+    - [ ] Update 64: System tray icon (pystray)
+    - [ ] Update 65: App launcher script
+    - [ ] Update 66: Dark/light mode toggle
+    - [ ] Update 67: GUI stats dashboard
+
+- [ ] **Phase 5: Stability & Hardening**
+  - [ ] **Batch 5A: Performance & Safety**
+    - [ ] Update 68: WAL checkpoint optimization
+    - [ ] Update 69: SQLite connection pooling
+    - [ ] Update 70: Query result cache
+    - [ ] Update 71: DB integrity check on startup
+    - [ ] Update 72: Graceful shutdown
+    - [ ] Update 73: Fuzzy cache memory limit
+    - [ ] Update 74: Ollama rate limiter
+    - [ ] Update 75: Max file size filter
+  - [ ] **Batch 5B: Tooling & Config**
+    - [ ] Update 76: /rebuild command
+    - [ ] Update 77: setup.sh deps install update
+    - [ ] Update 78: Indexer memory cap
+    - [ ] Update 79: filefinder-doctor CLI
+    - [ ] Update 80: config.json centralized settings

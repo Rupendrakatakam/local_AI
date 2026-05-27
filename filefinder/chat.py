@@ -1,31 +1,31 @@
 """
 chat.py — Terminal chat interface for FileChat.
-Batch 3:
-  #17 /hidden toggle
-  #13 /service command
-  #9  Live file count badge in prompt (cached, refreshed every 60s)
+Batch 4:
+  #20 /re <pattern> — regex search bypass (no LLM, no cascade)
+  #22 Boot progress bar — live display during initial scan
 """
 
+import re
 import sys
 import time
+import sqlite3
 import datetime
 import subprocess
 import threading
 import requests
 from pathlib import Path
-from search import search, db_stats, FileResult, toggle_hidden, get_show_hidden
+from search import search, db_stats, FileResult, toggle_hidden, get_show_hidden, DB_PATH
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich import box
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
 from prompt_toolkit.history import FileHistory
 
-console = Console()
-
-PROMPT_STYLE = Style.from_dict({"prompt": "bold ansigreen"})
+console      = Console()
 HISTORY_FILE = Path.home() / ".config" / "filefinder" / "history"
 PAGE_SIZE    = 10
 
@@ -34,22 +34,22 @@ HELP_TEXT = """
 
 [bold]Search examples:[/bold]
   where is resume.pdf
-  find my python scripts
   find image named rupendra
-  type:video        [dim]← all videos[/dim]
-  type:code         [dim]← all code files[/dim]
-  type:image rupendra  [dim]← images with 'rupendra' in name[/dim]
+  type:video                    [dim]all videos[/dim]
+  type:code rupendra            [dim]code files matching name[/dim]
+  /re .*LQR.*\\.pdf$            [dim]regex search — bypasses LLM[/dim]
 
 [bold]Commands:[/bold]
-  [yellow]help[/yellow]          Show this message
-  [yellow]stats[/yellow]         Show index + Ollama status
+  [yellow]help[/yellow]          This message
+  [yellow]stats[/yellow]         Index + Ollama status
   [yellow]/hidden[/yellow]       Toggle hidden files on/off
   [yellow]/service[/yellow]      Show indexer daemon status
+  [yellow]/re <pattern>[/yellow] Regex search (case-insensitive)
   [yellow]/open N[/yellow]       Open result N in default app
   [yellow]/copy N[/yellow]       Copy path of result N to clipboard
   [yellow]exit[/yellow]          Quit
 
-[bold]Pagination:[/bold]  After results, press [yellow]n[/yellow] next / [yellow]p[/yellow] prev / [yellow]q[/yellow] quit
+[bold]Pagination:[/bold]  [yellow]n[/yellow] next  [yellow]p[/yellow] prev  [yellow]q[/yellow] quit
 """
 
 _last_results: list[FileResult] = []
@@ -57,12 +57,11 @@ _current_page: int = 0
 _total_pages:  int = 0
 
 # ── Live file count badge (#9) ────────────────────────────────────────────────
-_live_count:    str  = "…"
-_count_lock          = threading.Lock()
+_live_count = "…"
+_count_lock = threading.Lock()
 
 
 def _refresh_count_loop() -> None:
-    """Background thread: refresh file count every 60 seconds."""
     global _live_count
     while True:
         try:
@@ -81,10 +80,10 @@ def get_live_count() -> str:
 
 
 def _make_prompt() -> list[tuple[str, str]]:
-    count = get_live_count()
-    hidden_marker = " [H]" if get_show_hidden() else ""
+    count  = get_live_count()
+    hidden = " H" if get_show_hidden() else ""
     return [
-        ("class:badge", f" [{count} files{hidden_marker}]"),
+        ("class:badge",  f" [{count}{hidden}]"),
         ("class:prompt", " You ❯ "),
     ]
 
@@ -93,6 +92,77 @@ PROMPT_STYLE = Style.from_dict({
     "badge":  "ansidarkgray",
     "prompt": "bold ansigreen",
 })
+
+
+# ── Regex search (#20) ────────────────────────────────────────────────────────
+def _regex_search(pattern: str, limit: int = 50) -> list[FileResult]:
+    """
+    Bypass LLM and cascade entirely.
+    Uses a Python regex UDF registered on the SQLite connection.
+    """
+    if not DB_PATH.exists():
+        console.print("[red]Index not ready.[/red]")
+        return []
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        console.print(f"[red]Invalid regex:[/red] {e}")
+        return []
+
+    conn = sqlite3.connect(DB_PATH)
+
+    # Register Python regex as a SQLite function
+    def regex_match(pat: str, value: str) -> int:
+        try:
+            return 1 if compiled.search(value) else 0
+        except Exception:
+            return 0
+
+    conn.create_function("REGEXP", 2, regex_match)
+    conn.row_factory = sqlite3.Row
+
+    hidden_clause = "" if get_show_hidden() else "AND name NOT LIKE '.%'"
+    rows = conn.execute(
+        f"SELECT path, name, extension, size, mtime FROM files "
+        f"WHERE REGEXP(?, name) AND size > 0 {hidden_clause} "
+        f"ORDER BY mtime DESC LIMIT ?",
+        (pattern, limit),
+    ).fetchall()
+    conn.close()
+    return [FileResult(**dict(r)) for r in rows]
+
+
+# ── Boot progress bar (#22) ───────────────────────────────────────────────────
+def _show_boot_progress() -> None:
+    """
+    If the indexer is still doing its initial scan, show a live progress
+    bar that reads from /tmp/filefinder.booting every 500ms.
+    """
+    boot_file = Path("/tmp/filefinder.booting")
+    if not boot_file.exists():
+        return
+
+    console.print()
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[cyan]Indexing home directory…[/cyan]"),
+        BarColumn(bar_width=30),
+        TextColumn("[cyan]{task.fields[count]}[/cyan] files"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("scan", total=None, count="0")
+        while boot_file.exists():
+            try:
+                count_str = boot_file.read_text().strip()
+                progress.update(task, count=count_str)
+            except Exception:
+                pass
+            time.sleep(0.5)
+        progress.update(task, count=get_live_count())
+
+    console.print(f"[green]  ✓ Index ready — {get_live_count()} files[/green]\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,15 +186,11 @@ def trunc(s: str, max_len: int) -> str:
     return s if len(s) <= max_len else s[:max_len - 1] + "…"
 
 
-# ── Table display with pagination ─────────────────────────────────────────────
+# ── Table rendering ───────────────────────────────────────────────────────────
 def _render_page(results: list[FileResult], page: int, total_pages: int) -> None:
-    term_width = console.width or 100
-    if term_width >= 120:
-        name_w, path_w = 30, 45
-    elif term_width >= 90:
-        name_w, path_w = 24, 35
-    else:
-        name_w, path_w = 18, 25
+    w = console.width or 100
+    name_w = 30 if w >= 120 else 24 if w >= 90 else 18
+    path_w = 45 if w >= 120 else 35 if w >= 90 else 25
 
     start        = page * PAGE_SIZE
     end          = min(start + PAGE_SIZE, len(results))
@@ -135,11 +201,11 @@ def _render_page(results: list[FileResult], page: int, total_pages: int) -> None
         header_style="bold cyan", border_style="dim",
         show_lines=False, expand=False,
     )
-    table.add_column("#",          style="dim",        width=3,      justify="right")
-    table.add_column("File Name",  style="bold green", width=name_w, no_wrap=True, overflow="ellipsis")
-    table.add_column("Path",       style="white",      width=path_w, no_wrap=True, overflow="ellipsis")
-    table.add_column("Size",       style="cyan",       width=9,      justify="right", no_wrap=True)
-    table.add_column("Modified",   style="dim",        width=16,     no_wrap=True)
+    table.add_column("#",         style="dim",        width=3,      justify="right")
+    table.add_column("File Name", style="bold green", width=name_w, no_wrap=True, overflow="ellipsis")
+    table.add_column("Path",      style="white",      width=path_w, no_wrap=True, overflow="ellipsis")
+    table.add_column("Size",      style="cyan",       width=9,      justify="right", no_wrap=True)
+    table.add_column("Modified",  style="dim",        width=16,     no_wrap=True)
 
     for i, r in enumerate(page_results, start + 1):
         table.add_row(
@@ -163,20 +229,23 @@ def _render_page(results: list[FileResult], page: int, total_pages: int) -> None
         )
 
 
-def display_results(results: list[FileResult], session: PromptSession) -> None:
+def display_results(results: list[FileResult], session: PromptSession, is_fuzzy: bool = False) -> None:
     global _last_results, _current_page, _total_pages
 
     if not results:
         console.print(Panel(
-            "[yellow]No files found.[/yellow] Try different keywords or [yellow]/hidden[/yellow] to include hidden files.",
+            "[yellow]No files found.[/yellow] Try different keywords, "
+            "[yellow]/hidden[/yellow] for hidden files, or [yellow]/re pattern[/yellow] for regex.",
             border_style="yellow",
         ))
         return
 
+    if is_fuzzy:
+        console.print("\n[yellow]⚠ No exact matches. Showing fuzzy/approximate results:[/yellow]")
+
     _last_results = results
     _total_pages  = (len(results) + PAGE_SIZE - 1) // PAGE_SIZE
     _current_page = 0
-
     _render_page(results, _current_page, _total_pages)
 
     if _total_pages > 1:
@@ -197,59 +266,40 @@ def display_results(results: list[FileResult], session: PromptSession) -> None:
                 break
 
 
-# ── Commands ──────────────────────────────────────────────────────────────────
+# ── Command handlers ──────────────────────────────────────────────────────────
 def show_stats() -> None:
     s = db_stats()
-    boot_file = Path("/tmp/filefinder.booting")
-
     if not s["ready"]:
-        if boot_file.exists():
-            count = boot_file.read_text().strip()
-            console.print(Panel(
-                f"[yellow]⏳ Scan in progress — {count} files so far.[/yellow]",
-                title="Index Stats", border_style="yellow", width=65,
-            ))
-        else:
-            console.print("[red]Index not ready. Run: systemctl --user start filefinder[/red]")
+        console.print("[red]Index not ready. Run: systemctl --user start filefinder[/red]")
         return
-
-    ollama_line = (
-        "[green]✓ Ollama online[/green]" if check_ollama()
-        else "[yellow]⚠ Ollama offline — fast regex fallback active[/yellow]"
-    )
-    hidden_line = "[cyan]Hidden files: ON[/cyan]" if get_show_hidden() else "[dim]Hidden files: OFF (use /hidden to toggle)[/dim]"
+    ollama_s = "[green]✓ Ollama online[/green]" if check_ollama() else "[yellow]⚠ Ollama offline — regex fallback[/yellow]"
+    hidden_s = "[cyan]ON[/cyan]" if get_show_hidden() else "[dim]OFF[/dim]"
     console.print(Panel(
-        f"[green]✓[/green] Index ready\n"
-        f"[cyan]{s['total']:,}[/cyan] files indexed\n"
+        f"[green]✓[/green] Index ready — [cyan]{s['total']:,}[/cyan] files\n"
         f"[dim]DB: {s['db_path']}[/dim]\n"
-        f"{ollama_line}\n"
-        f"{hidden_line}",
+        f"{ollama_s}\n"
+        f"Hidden files: {hidden_s}",
         title="Index Stats", border_style="cyan", width=65,
     ))
 
 
-def show_service_status() -> None:
-    """#13 — show systemd service status."""
+def show_service() -> None:
     try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["systemctl", "--user", "status", "filefinder", "--no-pager", "-l"],
             capture_output=True, text=True, timeout=5,
         )
-        output = result.stdout or result.stderr
-        # Show just the key lines, not the full wall of text
-        lines = output.strip().splitlines()
-        summary = "\n".join(lines[:8])
-        border = "green" if "active (running)" in output else "red"
-        console.print(Panel(summary, title="Indexer Service", border_style=border, width=70))
-    except FileNotFoundError:
-        console.print("[red]systemctl not found. Are you on a systemd system?[/red]")
+        out    = (r.stdout or r.stderr).strip()
+        lines  = "\n".join(out.splitlines()[:8])
+        color  = "green" if "active (running)" in out else "red"
+        console.print(Panel(lines, title="Indexer Service", border_style=color, width=70))
     except Exception as e:
-        console.print(f"[red]Error checking service: {e}[/red]")
+        console.print(f"[red]Error: {e}[/red]")
 
 
 def open_result(idx: int) -> None:
     if not _last_results or idx < 1 or idx > len(_last_results):
-        console.print(f"[red]No result #{idx}. Run a search first.[/red]")
+        console.print(f"[red]No result #{idx}.[/red]")
         return
     path = _last_results[idx - 1].path
     try:
@@ -261,7 +311,7 @@ def open_result(idx: int) -> None:
 
 def copy_result(idx: int) -> None:
     if not _last_results or idx < 1 or idx > len(_last_results):
-        console.print(f"[red]No result #{idx}. Run a search first.[/red]")
+        console.print(f"[red]No result #{idx}.[/red]")
         return
     path = _last_results[idx - 1].path
     for tool, args in [
@@ -269,8 +319,7 @@ def copy_result(idx: int) -> None:
         ("xsel",  ["--clipboard", "--input"]),
     ]:
         try:
-            proc = subprocess.run([tool] + args, input=path.encode(), timeout=3)
-            if proc.returncode == 0:
+            if subprocess.run([tool] + args, input=path.encode(), timeout=3).returncode == 0:
                 console.print(f"[green]Copied:[/green] {tilde_path(path)}")
                 return
         except FileNotFoundError:
@@ -280,10 +329,8 @@ def copy_result(idx: int) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
-    # (#9) Start background count refresh thread
-    t = threading.Thread(target=_refresh_count_loop, daemon=True)
-    t.start()
-    # Prime the count immediately
+    # Start count refresh thread
+    threading.Thread(target=_refresh_count_loop, daemon=True).start()
     try:
         s = db_stats()
         with _count_lock:
@@ -302,19 +349,18 @@ def main() -> None:
 
     if not check_ollama():
         console.print(Panel(
-            "[yellow]⚠ Ollama is not running.[/yellow]\n"
-            "[dim]Falling back to fast regex. To enable NL search: [/dim][cyan]ollama serve[/cyan]",
+            "[yellow]⚠ Ollama not running.[/yellow]\n"
+            "[dim]Fast regex fallback active. To enable NL: [/dim][cyan]ollama serve[/cyan]",
             border_style="yellow", width=60,
         ))
     else:
         console.print("[dim]  Ollama online ✓[/dim]")
 
+    # (#22) Show live boot progress if scan is running
+    _show_boot_progress()
+
     s = db_stats()
-    boot_file = Path("/tmp/filefinder.booting")
-    if not s["ready"] and boot_file.exists():
-        count = boot_file.read_text().strip()
-        console.print(f"[yellow]  ⏳ Scan in progress ({count} files so far)…[/yellow]\n")
-    elif s["ready"]:
+    if s["ready"]:
         console.print(f"[dim]  Index ready — {s['total']:,} files[/dim]\n")
     else:
         console.print("[yellow]  ⚠ Index not found. Is the indexer running?[/yellow]\n")
@@ -337,47 +383,43 @@ def main() -> None:
         if low in ("exit", "quit", "bye", "/bye"):
             console.print("[dim]Goodbye.[/dim]")
             break
-
         if low == "help":
             console.print(HELP_TEXT)
             continue
-
         if low == "stats":
             show_stats()
             continue
-
-        if low == "/hidden":                          # #17
+        if low == "/hidden":
             state = toggle_hidden()
-            label = "[cyan]ON[/cyan] — hidden files included" if state else "[dim]OFF[/dim] — hidden files excluded"
-            console.print(f"  Hidden files: {label}")
+            console.print(f"  Hidden files: {'[cyan]ON[/cyan]' if state else '[dim]OFF[/dim]'}")
             continue
-
-        if low == "/service":                         # #13
-            show_service_status()
+        if low == "/service":
+            show_service()
             continue
-
         if low.startswith("/open"):
             parts = low.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                open_result(int(parts[1]))
-            else:
-                console.print("[yellow]Usage: /open N[/yellow]")
+            open_result(int(parts[1])) if len(parts) == 2 and parts[1].isdigit() else console.print("[yellow]Usage: /open N[/yellow]")
             continue
-
         if low.startswith("/copy"):
             parts = low.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                copy_result(int(parts[1]))
-            else:
-                console.print("[yellow]Usage: /copy N[/yellow]")
+            copy_result(int(parts[1])) if len(parts) == 2 and parts[1].isdigit() else console.print("[yellow]Usage: /copy N[/yellow]")
+            continue
+
+        # (#20) Regex bypass
+        if low.startswith("/re "):
+            pattern = query[4:].strip()
+            if not pattern:
+                console.print("[yellow]Usage: /re <pattern>   e.g. /re .*LQR.*\\.pdf$[/yellow]")
+                continue
+            with console.status("[cyan]Regex search…[/cyan]", spinner="dots"):
+                results = _regex_search(pattern)
+            display_results(results, session, is_fuzzy=False)
             continue
 
         with console.status("[cyan]Searching…[/cyan]", spinner="dots"):
             results, is_fuzzy = search(query)
 
-        if is_fuzzy and results:
-            console.print("[dim yellow]  🔍 Showing approximate matches (fuzzy search)[/dim yellow]")
-        display_results(results, session)
+        display_results(results, session, is_fuzzy)
 
 
 if __name__ == "__main__":

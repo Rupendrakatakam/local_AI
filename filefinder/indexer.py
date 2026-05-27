@@ -95,9 +95,24 @@ def _run_vacuum(count: int) -> None:
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
+def _generate_trigrams(name: str) -> list[str]:
+    s = name.lower()
+    if len(s) < 3:
+        return []
+    return list({s[i:i+3] for i in range(len(s)-2)})
+
+
 def get_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(str(DB_PATH.parent), 0o700)
+    except OSError:
+        pass
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        os.chmod(str(DB_PATH), 0o600)
+    except OSError:
+        pass
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS files (
@@ -110,11 +125,75 @@ def get_db() -> sqlite3.Connection:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name COLLATE NOCASE)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ext  ON files(extension)")
+    
+    # FTS5 Virtual Table for content indexing
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+            name, path,
+            content='files', content_rowid='rowid',
+            tokenize='unicode61 separators "_-."'
+        )
+    """)
+    
+    # FTS5 Triggers
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+            INSERT INTO files_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.rowid, old.name, old.path);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+            INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.rowid, old.name, old.path);
+            INSERT INTO files_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
+        END
+    """)
+    
+    # Trigram table + index for typo-tolerant fallback
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS name_trigrams (
+            trigram TEXT NOT NULL,
+            file_id INTEGER NOT NULL,
+            FOREIGN KEY(file_id) REFERENCES files(rowid)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trigram ON name_trigrams(trigram)")
+    
+    # Check if FTS5 is populated when there are files
+    try:
+        cursor = conn.execute("SELECT count(*) FROM files_fts")
+        fts_count = cursor.fetchone()[0]
+        if fts_count == 0:
+            cursor = conn.execute("SELECT count(*) FROM files")
+            files_count = cursor.fetchone()[0]
+            if files_count > 0:
+                log.info("Rebuilding FTS5 virtual table for %d files...", files_count)
+                conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
+                
+                # Also populate trigrams if empty
+                cursor = conn.execute("SELECT count(*) FROM name_trigrams")
+                trig_count = cursor.fetchone()[0]
+                if trig_count == 0:
+                    log.info("Populating name trigrams table...")
+                    rows = conn.execute("SELECT rowid, name FROM files").fetchall()
+                    trigram_inserts = []
+                    for r_id, name in rows:
+                        for tg in _generate_trigrams(name):
+                            trigram_inserts.append((tg, r_id))
+                    if trigram_inserts:
+                        conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", trigram_inserts)
+    except sqlite3.OperationalError as e:
+        log.warning("FTS5/Trigram population check failed: %s", e)
+        
     conn.commit()
     return conn
 
 
-def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str]) -> None:
+def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], commit: bool = True) -> None:
     try:
         p = Path(path)
         if not p.is_file():
@@ -124,17 +203,49 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str]) -> N
             return
         if is_ignored(str(p), ignore_patterns):
             return
-        conn.execute(
+        
+        # Check if row exists to delete old trigrams
+        cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (str(p),))
+        row = cursor.fetchone()
+        if row:
+            conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
+            
+        cursor = conn.execute(
             "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
             (str(p), p.name, p.suffix.lower().lstrip("."), st.st_size, st.st_mtime),
         )
-        conn.commit()
-        _maybe_vacuum(conn)   # #16
+        rowid = cursor.lastrowid
+        
+        # Populate trigrams
+        trigrams = _generate_trigrams(p.name)
+        if trigrams:
+            conn.executemany(
+                "INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)",
+                [(tg, rowid) for tg in trigrams]
+            )
+            
+        # Semantic embedding integration (Phase 2)
+        try:
+            from embedder import get_pipeline
+            pipeline = get_pipeline()
+            # Start worker safely (it checks if already running)
+            pipeline.start_worker()
+            pipeline.enqueue(str(p), st.st_mtime)
+        except ImportError:
+            pass
+            
+        if commit:
+            conn.commit()
+            _maybe_vacuum(conn)   # #16
     except (PermissionError, OSError):
         pass
 
 
 def delete(conn: sqlite3.Connection, path: str) -> None:
+    cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
+    row = cursor.fetchone()
+    if row:
+        conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
     conn.execute("DELETE FROM files WHERE path = ?", (path,))
     conn.commit()
     _maybe_vacuum(conn)   # #16
@@ -165,11 +276,13 @@ def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
             if fname.startswith("."):
                 continue
             full_path = os.path.join(root, fname)
-            upsert(conn, full_path, ignore_patterns)
+            upsert(conn, full_path, ignore_patterns, commit=False)
             count += 1
-            if count % 100 == 0:
+            if count % 500 == 0:
+                conn.commit()
                 throttle_if_busy()
                 progress_file.write_text(str(count))
+    conn.commit()  # Final commit
     progress_file.unlink(missing_ok=True)
     log.info("Full scan complete — %d files indexed.", count)
 
