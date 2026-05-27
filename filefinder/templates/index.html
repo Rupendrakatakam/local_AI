@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FileChat</title>
+    <!-- Use Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Dark Mode (Default) */
+            --bg: #0a0a0f;
+            --surface: rgba(255, 255, 255, 0.05);
+            --surface-hover: rgba(255, 255, 255, 0.08);
+            --border: rgba(255, 255, 255, 0.1);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-cyan: #00D4FF;
+            --accent-purple: #A78BFA;
+            --glass-blur: blur(20px);
+        }
+
+        [data-theme="light"] {
+            --bg: #f8fafc;
+            --surface: rgba(255, 255, 255, 0.8);
+            --surface-hover: rgba(255, 255, 255, 1);
+            --border: rgba(0, 0, 0, 0.1);
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --accent-cyan: #0284c7;
+            --accent-purple: #7c3aed;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: background-color 0.3s ease;
+        }
+
+        /* Top Bar */
+        header {
+            padding: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .controls {
+            display: flex;
+            gap: 16px;
+        }
+
+        .icon-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            backdrop-filter: var(--glass-blur);
+            transition: all 0.2s ease;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .icon-btn:hover {
+            background: var(--surface-hover);
+            transform: translateY(-1px);
+        }
+
+        /* Main Container */
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            padding: 0 24px 24px 24px;
+            gap: 24px;
+        }
+
+        /* Search & Results Panel */
+        .search-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transition: flex 0.3s ease;
+        }
+
+        .search-box {
+            position: relative;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 16px 48px 16px 20px;
+            font-size: 18px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-main);
+            backdrop-filter: var(--glass-blur);
+            transition: all 0.2s ease;
+            outline: none;
+        }
+
+        .search-box input:focus {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
+        }
+
+        .search-box .shortcut-hint {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 12px;
+            background: rgba(0,0,0,0.2);
+            padding: 4px 8px;
+            border-radius: 4px;
+            pointer-events: none;
+        }
+
+        /* Results Table */
+        .results-container {
+            flex: 1;
+            overflow-y: auto;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            backdrop-filter: var(--glass-blur);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            color: var(--text-muted);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            background: var(--bg);
+            z-index: 10;
+        }
+
+        td {
+            padding: 12px 16px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+        }
+
+        tr {
+            transition: background 0.15s ease;
+            position: relative;
+        }
+
+        tr:hover, tr.selected {
+            background: var(--surface-hover);
+        }
+
+        .file-name {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 500;
+        }
+        
+        .file-path {
+            color: var(--text-muted);
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 300px;
+        }
+
+        /* Confidence Bar (Update 59) */
+        .confidence-indicator {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+        }
+        
+        .conf-high { background-color: #10b981; }
+        .conf-med  { background-color: #f59e0b; }
+        .conf-low  { background-color: #ef4444; }
+
+        /* Preview Panel */
+        .preview-panel {
+            width: 0;
+            opacity: 0;
+            overflow: hidden;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            backdrop-filter: var(--glass-blur);
+            display: flex;
+            flex-direction: column;
+            transition: all 0.3s ease;
+        }
+
+        .preview-panel.active {
+            width: 40%;
+            opacity: 1;
+        }
+
+        .preview-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .preview-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .preview-content {
+            padding: 16px;
+            flex: 1;
+            overflow-y: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text-muted);
+        }
+
+        .preview-content pre {
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+
+        .preview-content img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+
+        .btn-open {
+            background: var(--accent-cyan);
+            color: #000;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        
+        .btn-open:hover { opacity: 0.8; }
+
+        .status-bar {
+            color: var(--text-muted);
+            font-size: 13px;
+            padding-left: 4px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>FileChat</h1>
+        <div class="controls">
+            <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
+            <button class="icon-btn" id="btn-theme" onclick="toggleTheme()">🌓 Theme</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="search-panel">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search files, contents, or use /alias..." autocomplete="off">
+                <div class="shortcut-hint">/</div>
+            </div>
+            <div class="status-bar" id="statusBar">Ready. Type to search.</div>
+            
+            <div class="results-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 45%;">Name</th>
+                            <th style="width: 35%;">Path</th>
+                            <th style="width: 10%;">Size</th>
+                            <th style="width: 10%;">Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody">
+                        <!-- Rows populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="preview-panel" id="previewPanel">
+            <div class="preview-header">
+                <div class="preview-title" id="previewTitle">Preview</div>
+                <div>
+                    <button class="btn-open" id="btnOpenSelected">Open</button>
+                    <button class="icon-btn" onclick="closePreview()" style="margin-left: 8px; border:none;">✕</button>
+                </div>
+            </div>
+            <div class="preview-content" id="previewContent">
+                Select a file to preview
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const searchInput = document.getElementById('searchInput');
+        const resultsBody = document.getElementById('resultsBody');
+        const statusBar = document.getElementById('statusBar');
+        const previewPanel = document.getElementById('previewPanel');
+        const previewTitle = document.getElementById('previewTitle');
+        const previewContent = document.getElementById('previewContent');
+        const btnOpenSelected = document.getElementById('btnOpenSelected');
+
+        let currentResults = [];
+        let selectedIndex = -1;
+        let searchTimeout = null;
+
+        // Icons map
+        const ICONS = {
+            py: '🐍', js: '🟨', ts: '🟦', html: '🌐', css: '🎨', 
+            json: '｛', md: '📝', txt: '📄', pdf: '📕', docx: '📘',
+            jpg: '🖼️', png: '🖼️', mp4: '🎬', mp3: '🎵', zip: '📦',
+            default: '📄'
+        };
+
+        function getFileIcon(ext) {
+            return ICONS[ext?.toLowerCase()] || ICONS.default;
+        }
+
+        function formatDate(ts) {
+            const date = new Date(ts * 1000);
+            return date.toLocaleDateString(undefined, {month: 'short', day: 'numeric', year: 'numeric'});
+        }
+
+        // Dark/Light Theme (Update 66)
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const target = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', target);
+            localStorage.setItem('theme', target);
+        }
+        
+        // Initialize theme
+        if (localStorage.getItem('theme') === 'light') toggleTheme();
+
+        // Search API Call
+        async function performSearch(query) {
+            if (!query) {
+                resultsBody.innerHTML = '';
+                currentResults = [];
+                statusBar.textContent = 'Ready.';
+                closePreview();
+                return;
+            }
+
+            statusBar.textContent = 'Searching...';
+            try {
+                const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const data = await res.json();
+                currentResults = data.results;
+                renderResults(data);
+                statusBar.textContent = `Found ${currentResults.length} results ${data.is_fuzzy ? '(Fuzzy Match)' : ''}`;
+            } catch (e) {
+                statusBar.textContent = `Error: ${e.message}`;
+            }
+        }
+
+        // Render Results Table
+        function renderResults(data) {
+            resultsBody.innerHTML = '';
+            selectedIndex = -1;
+
+            if (data.results.length === 0) {
+                resultsBody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:32px; color:var(--text-muted)">No results found</td></tr>';
+                return;
+            }
+
+            data.results.forEach((r, idx) => {
+                const tr = document.createElement('tr');
+                tr.onclick = () => selectResult(idx);
+                
+                // Confidence Bar (Update 59)
+                // Just a mock heuristic based on rank for UI demo purposes since score isn't in API yet
+                let confClass = 'conf-low';
+                if (idx < 3) confClass = 'conf-high';
+                else if (idx < 10) confClass = 'conf-med';
+
+                tr.innerHTML = `
+                    <div class="confidence-indicator ${confClass}"></div>
+                    <td>
+                        <div class="file-name">
+                            <span>${getFileIcon(r.extension)}</span>
+                            <span>${r.name}</span>
+                        </div>
+                    </td>
+                    <td><div class="file-path" title="${r.path}">${r.path}</div></td>
+                    <td>${r.size_human}</td>
+                    <td>${formatDate(r.mtime)}</td>
+                `;
+                resultsBody.appendChild(tr);
+            });
+        }
+
+        // Select Result & Load Preview (Updates 60, 61, 62)
+        async function selectResult(idx) {
+            if (idx < 0 || idx >= currentResults.length) return;
+            
+            // UI Selection state
+            const rows = resultsBody.querySelectorAll('tr');
+            rows.forEach(r => r.classList.remove('selected'));
+            rows[idx].classList.add('selected');
+            rows[idx].scrollIntoView({block: 'nearest'});
+            selectedIndex = idx;
+
+            const file = currentResults[idx];
+            previewTitle.textContent = file.name;
+            previewPanel.classList.add('active');
+            previewContent.innerHTML = '<div style="text-align:center; margin-top:20px;">Loading preview...</div>';
+
+            // Fetch Preview
+            try {
+                const res = await fetch(`/api/preview?path=${encodeURIComponent(file.path)}`);
+                if (res.headers.get('content-type').includes('image')) {
+                    // Image Preview
+                    previewContent.innerHTML = `<img src="/api/preview?path=${encodeURIComponent(file.path)}" alt="${file.name}">`;
+                } else {
+                    const data = await res.json();
+                    if (data.type === 'text' || data.type === 'pdf') {
+                        let header = data.type === 'pdf' ? `<i>PDF Document - ${data.pages} pages</i><br><br>` : '';
+                        previewContent.innerHTML = `${header}<pre>${escapeHtml(data.content)}</pre>`;
+                    } else {
+                        previewContent.innerHTML = `<i>${data.content}</i>`;
+                    }
+                }
+            } catch (e) {
+                previewContent.innerHTML = `<span style="color:red">Preview error: ${e.message}</span>`;
+            }
+
+            // Update Open Button
+            btnOpenSelected.onclick = () => openFile(file.path, searchInput.value);
+        }
+
+        function closePreview() {
+            previewPanel.classList.remove('active');
+            const rows = resultsBody.querySelectorAll('tr');
+            rows.forEach(r => r.classList.remove('selected'));
+            selectedIndex = -1;
+        }
+
+        // Open File API
+        async function openFile(path, query) {
+            try {
+                await fetch('/api/open', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({path, query})
+                });
+            } catch (e) {
+                alert(`Error opening file: ${e.message}`);
+            }
+        }
+
+        // Stats Dashboard (Update 67)
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                alert(`INDEX STATS\nFiles: ${data.total}\nReady: ${data.ready}\n\nHealth: ${JSON.stringify(data.health, null, 2)}`);
+            } catch (e) {
+                alert(`Stats error: ${e.message}`);
+            }
+        }
+
+        function escapeHtml(unsafe) {
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
+
+        // Event Listeners (Update 63 - Keyboard Shortcuts)
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => performSearch(e.target.value), 300);
+        });
+
+        document.addEventListener('keydown', (e) => {
+            // '/' to focus search
+            if (e.key === '/' && document.activeElement !== searchInput) {
+                e.preventDefault();
+                searchInput.focus();
+            }
+            // Esc to clear/close
+            else if (e.key === 'Escape') {
+                if (previewPanel.classList.contains('active')) {
+                    closePreview();
+                } else if (searchInput.value) {
+                    searchInput.value = '';
+                    performSearch('');
+                }
+                searchInput.blur();
+            }
+            // Arrow Keys for navigation
+            else if (e.key === 'ArrowDown' && currentResults.length > 0) {
+                e.preventDefault();
+                selectResult(Math.min(selectedIndex + 1, currentResults.length - 1));
+            }
+            else if (e.key === 'ArrowUp' && currentResults.length > 0) {
+                e.preventDefault();
+                selectResult(Math.max(selectedIndex - 1, 0));
+            }
+            // Enter to open
+            else if (e.key === 'Enter' && selectedIndex >= 0) {
+                e.preventDefault();
+                openFile(currentResults[selectedIndex].path, searchInput.value);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -414,6 +414,26 @@ def main() -> None:
             state = toggle_hidden()
             console.print(f"  Hidden files: {'[cyan]ON[/cyan]' if state else '[dim]OFF[/dim]'}")
             continue
+        if low == "/rebuild":
+            console.print("[yellow]Rebuilding FTS5 + trigrams...[/yellow]")
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute("DELETE FROM files_fts")
+                conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
+                conn.execute("DELETE FROM name_trigrams")
+                from indexer import _generate_trigrams
+                rows = conn.execute("SELECT rowid, name FROM files").fetchall()
+                batch = []
+                for rid, name in rows:
+                    for tg in _generate_trigrams(name):
+                        batch.append((tg, rid))
+                conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", batch)
+                conn.commit()
+                conn.close()
+                console.print(f"[green]✓ Rebuilt FTS5 + trigrams for {len(rows):,} files[/green]")
+            except Exception as e:
+                console.print(f"[red]Rebuild failed: {e}[/red]")
+            continue
         if low == "/privacy clear":
             try:
                 from behavior import privacy_clear

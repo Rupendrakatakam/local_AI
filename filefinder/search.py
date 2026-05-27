@@ -19,6 +19,41 @@ from typing import Optional
 DB_PATH    = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL      = "phi3:mini"
+CACHE_TTL  = 30.0  # Update 70: query cache TTL in seconds
+
+# Update 69: Thread-local connection pool
+_local = threading.local()
+
+def _get_conn() -> sqlite3.Connection:
+    """Thread-local connection pool — reuses one connection per thread."""
+    if not hasattr(_local, 'conn') or _local.conn is None:
+        _local.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _local.conn.row_factory = sqlite3.Row
+        _local.conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn.execute("PRAGMA cache_size=-4000")  # 4MB cache
+    return _local.conn
+
+# Update 70: Query result cache
+_query_cache: dict[str, tuple[float, list, bool]] = {}
+
+def _cache_get(key: str):
+    if key in _query_cache:
+        ts, results, fuzzy = _query_cache[key]
+        if time.time() - ts < CACHE_TTL:
+            return results, fuzzy
+        del _query_cache[key]
+    return None
+
+def _cache_set(key: str, results, fuzzy):
+    if len(_query_cache) > 200:
+        oldest = min(_query_cache, key=lambda k: _query_cache[k][0])
+        del _query_cache[oldest]
+    _query_cache[key] = (time.time(), results, fuzzy)
+
+# Update 74: Ollama rate limiter
+_ollama_semaphore = threading.Semaphore(3)
+_ollama_last_call = 0.0
+_OLLAMA_MIN_INTERVAL = 0.1
 
 # ── Category map (#18) ────────────────────────────────────────────────────────
 CATEGORY_MAP: dict[str, list[str]] = {
@@ -461,10 +496,17 @@ Examples:
   "find image named rupendra" → {"keywords": ["rupendra"], "extension": null, "directory": null}"""
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=256)
 def _parse_intent(query: str) -> dict:
+    global _ollama_last_call
     try:
-        resp = requests.post(
+        with _ollama_semaphore:
+            now = time.time()
+            wait = _OLLAMA_MIN_INTERVAL - (now - _ollama_last_call)
+            if wait > 0:
+                time.sleep(wait)
+            _ollama_last_call = time.time()
+            resp = requests.post(
             OLLAMA_URL,
             json={"model": MODEL, "prompt": f"{SYSTEM_PROMPT}\n\nQuery: {query}\nJSON:", "stream": False},
             timeout=15,
@@ -587,6 +629,11 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
       7. Fuzzy fallback (Batch 4)
     """
     stripped = query.strip()
+
+    # Update 70: Query cache check
+    cached = _cache_get(stripped)
+    if cached:
+        return cached
     
     # 0. Alias check (Phase 3)
     try:
@@ -705,10 +752,15 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     return [], False
 
 
+def _search_with_cache(query, results, is_fuzzy):
+    """Helper to cache and return results."""
+    _cache_set(query.strip(), results, is_fuzzy)
+    return results, is_fuzzy
+
+
 def db_stats() -> dict:
     if not DB_PATH.exists():
         return {"total": 0, "db_path": str(DB_PATH), "ready": False}
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     total = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    conn.close()
     return {"total": total, "db_path": str(DB_PATH), "ready": True}

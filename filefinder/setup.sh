@@ -14,9 +14,14 @@ echo "════════════════════════�
 echo ""
 
 # 1. Install Python deps via system package manager (APT)
-echo "▶ Installing Python dependencies via apt..."
+echo "▶ Installing system Python dependencies via apt..."
 sudo apt update
-sudo apt install -y python3-watchdog python3-rich python3-prompt-toolkit python3-requests
+sudo apt install -y python3-watchdog python3-rich python3-prompt-toolkit python3-requests python3-pip
+
+# 2. Install Phase 2–4 pip dependencies
+echo ""
+echo "▶ Installing Phase 2–4 pip dependencies..."
+pip install --quiet sentence-transformers lancedb pymupdf mammoth flask pystray pillow
 
 # 2. Set up systemd user service
 echo ""

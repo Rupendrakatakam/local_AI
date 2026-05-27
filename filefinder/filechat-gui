@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# filechat-gui — Launch FileChat GUI and System Tray
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$DIR"
+
+echo "Starting FileChat GUI..."
+
+# Start Flask backend in the background
+python3 gui.py &
+FLASK_PID=$!
+
+# Wait a second for Flask to initialize
+sleep 1
+
+# Open default browser
+python3 -c "import webbrowser; webbrowser.open('http://127.0.0.1:5000')"
+
+# Start system tray icon (blocking)
+echo "Starting System Tray Icon..."
+python3 tray.py
+
+# When tray.py exits (user clicks Quit), kill Flask
+echo "Shutting down FileChat GUI..."
+kill $FLASK_PID 2>/dev/null
+wait $FLASK_PID 2>/dev/null
+
+echo "Done."

@@ -1,0 +1,21 @@
+{
+    "watch_path": "~",
+    "db_path": "~/.local/share/filefinder/index.db",
+    "ollama_url": "http://localhost:11434/api/generate",
+    "ollama_model": "phi3:mini",
+    "embedding_model": "all-MiniLM-L6-v2",
+    "image_model": "openai/clip-vit-base-patch32",
+    "chunk_size": 400,
+    "chunk_overlap": 80,
+    "max_file_size_mb": 500,
+    "memory_cap_mb": 512,
+    "cache_ttl_seconds": 30,
+    "gui_port": 5000,
+    "vacuum_every": 5000,
+    "wal_checkpoint_interval": 300,
+    "debounce_sec": 0.5,
+    "cpu_load_cap": 2.0,
+    "ollama_rate_limit_ms": 100,
+    "ollama_max_concurrent": 3,
+    "lru_cache_maxsize": 256
+}

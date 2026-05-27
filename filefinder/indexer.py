@@ -11,6 +11,7 @@ import time
 import fnmatch
 import sqlite3
 import logging
+import resource
 import threading
 from pathlib import Path
 from watchdog.observers import Observer
@@ -25,6 +26,8 @@ DEBOUNCE_SEC  = 0.5
 THROTTLE_SEC  = 0.03
 CPU_LOAD_CAP  = 2.0
 VACUUM_EVERY  = 5_000    # #16: run VACUUM after this many write operations
+MAX_FILE_SIZE = 500 * 1024 * 1024  # Update 75: skip files > 500MB
+MEMORY_CAP_MB = 512               # Update 78: pause indexing if RSS exceeds this
 
 SKIP_DIRS = {
     ".git", ".cache", ".npm", ".cargo", "node_modules",
@@ -114,6 +117,17 @@ def get_db() -> sqlite3.Connection:
     except OSError:
         pass
     conn.execute("PRAGMA journal_mode=WAL")
+
+    # Update 71: DB integrity check on startup
+    try:
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        if result[0] != "ok":
+            log.error("DATABASE CORRUPTION DETECTED: %s", result[0])
+            log.error("Run: python3 doctor.py --repair")
+        else:
+            log.info("DB integrity check passed.")
+    except Exception as e:
+        log.warning("Integrity check failed: %s", e)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS files (
             path      TEXT PRIMARY KEY,
@@ -201,6 +215,9 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], comm
         st = p.stat()
         if st.st_size == 0:
             return
+        # Update 75: skip very large files
+        if st.st_size > MAX_FILE_SIZE:
+            return
         if is_ignored(str(p), ignore_patterns):
             return
         
@@ -282,6 +299,9 @@ def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
                 conn.commit()
                 throttle_if_busy()
                 progress_file.write_text(str(count))
+            # Update 78: memory cap check every 1000 files
+            if count % 1000 == 0:
+                _check_memory()
     conn.commit()  # Final commit
     progress_file.unlink(missing_ok=True)
     log.info("Full scan complete — %d files indexed.", count)
@@ -314,6 +334,44 @@ class Debouncer:
         with self._lock:
             self._pending.pop(path, None)
         upsert(self.conn, path, self.ignore_patterns)
+
+    # Update 72: Flush all pending timers on shutdown
+    def flush_all(self):
+        """Cancel all timers and process pending files immediately."""
+        with self._lock:
+            for path, timer in self._pending.items():
+                timer.cancel()
+                try:
+                    upsert(self.conn, path, self.ignore_patterns)
+                except Exception:
+                    pass
+            self._pending.clear()
+        log.info("Flushed all pending upserts.")
+
+
+# ── Memory monitor (Update 78) ───────────────────────────────────────────────
+def _check_memory():
+    """Returns current RSS in MB. Pauses if over cap."""
+    try:
+        rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB -> MB on Linux
+        if rss_mb > MEMORY_CAP_MB:
+            log.warning("Memory usage %.0f MB exceeds cap %d MB — pausing 5s", rss_mb, MEMORY_CAP_MB)
+            time.sleep(5)
+        return rss_mb
+    except Exception:
+        return 0
+
+
+# ── WAL Checkpoint (Update 68) ────────────────────────────────────────────────
+def _wal_checkpoint_loop(conn):
+    """Periodic WAL checkpoint to prevent unbounded WAL growth."""
+    while True:
+        time.sleep(300)  # every 5 minutes
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            log.debug("WAL checkpoint complete.")
+        except Exception:
+            pass
 
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
@@ -351,12 +409,18 @@ if __name__ == "__main__":
     observer.start()
     log.info("Watching %s for changes.", WATCH_PATH)
 
+    # Update 68: Start WAL checkpoint thread
+    threading.Thread(target=_wal_checkpoint_loop, args=(conn,), daemon=True).start()
+
     try:
         while True:
             time.sleep(2)
     except KeyboardInterrupt:
         pass
     finally:
+        # Update 72: Flush pending before shutdown
+        log.info("Flushing pending upserts before shutdown...")
+        debouncer.flush_all()
         observer.stop()
         observer.join()
         conn.close()
