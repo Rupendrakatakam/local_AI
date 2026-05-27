@@ -1,0 +1,17 @@
+**Role:** Expert Software Architect and Search Algorithm Specialist
+
+**Context:** I am developing "Local AI File Finder v1". The system is currently functional but struggles significantly with partial name recall. The core user story for this tool is: *As a user who only remembers a small fragment or rough approximation of a filename, I need the system to successfully retrieve the target file.* Currently, the system often fails this objective, likely due to rigid exact-matching or poorly optimized search logic.
+
+**Task:** Please use  @contextScopeItemMention @contextScopeItemMentionto conduct a deep architectural and algorithmic analysis of the existing codebase. 
+
+**Objective:** Draft a high-impact optimization plan based on the 80/20 rule (identifying the 20% of code changes that will yield 80% of the search accuracy improvements). 
+
+**Key Focus Areas:**
+1. **Diagnostic:** Pinpoint exactly where and why the current search implementation fails at handling partial strings, fragmented inputs, or minor typos.
+2. **Fuzzy Search Integration:** Propose lightweight, highly effective solutions to improve partial recall (e.g., fuzzy string matching, Levenshtein distance, n-gram indexing, or regex improvements).
+
+**Expected Output Format:**
+Please provide a structured response containing:
+* **Current Bottlenecks:** A brief list of the flaws in the current search logic.
+* **The 80/20 Action Plan:** A prioritized, step-by-step roadmap to implement the most impactful improvements. 
+* **Code Snippets:** Provide 1-2 brief examples of how you would rewrite the core search function to handle partial matches better.

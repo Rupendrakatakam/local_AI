@@ -1,10 +1,7 @@
 """
 indexer.py — Watches ~/home in real-time and keeps a SQLite index updated.
-Batch 1 additions:
-  - CPU idle-throttling during initial scan (#19)
-  - Watchdog event debouncer (#6)
-  - Zero-byte file filter (#10)
-  - .filefinder_ignore support (#1)
+Batch 1: CPU throttle, debouncer, zero-byte filter, ignore file
+Batch 3: #16 Automatic SQLite VACUUM every 5,000 writes
 """
 
 import os
@@ -20,19 +17,18 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WATCH_PATH   = str(Path.home())
-DB_PATH      = Path.home() / ".local" / "share" / "filefinder" / "index.db"
-LOG_PATH     = Path.home() / ".local" / "share" / "filefinder" / "indexer.log"
-IGNORE_FILE  = Path.home() / ".filefinder_ignore"
-DEBOUNCE_SEC = 0.5          # merge rapid events on the same file
-THROTTLE_SEC = 0.03         # sleep between files during scan when CPU load is high
-CPU_LOAD_CAP = 2.0          # 1-min load average threshold to start throttling
+WATCH_PATH    = str(Path.home())
+DB_PATH       = Path.home() / ".local" / "share" / "filefinder" / "index.db"
+LOG_PATH      = Path.home() / ".local" / "share" / "filefinder" / "indexer.log"
+IGNORE_FILE   = Path.home() / ".filefinder_ignore"
+DEBOUNCE_SEC  = 0.5
+THROTTLE_SEC  = 0.03
+CPU_LOAD_CAP  = 2.0
+VACUUM_EVERY  = 5_000    # #16: run VACUUM after this many write operations
 
-# Folders to always skip
 SKIP_DIRS = {
     ".git", ".cache", ".npm", ".cargo", "node_modules",
-    "__pycache__", ".venv", "venv", ".local/share/Trash",
-    "snap",                 # Ubuntu snap — tens of thousands of tiny files
+    "__pycache__", ".venv", "venv", ".local/share/Trash", "snap",
 }
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -48,19 +44,9 @@ logging.basicConfig(
 log = logging.getLogger("indexer")
 
 
-# ── .filefinder_ignore loader (#1) ───────────────────────────────────────────
+# ── Ignore patterns ───────────────────────────────────────────────────────────
 def load_ignore_patterns() -> list[str]:
-    """
-    Read ~/.filefinder_ignore, one glob pattern per line.
-    Lines starting with # are comments.
-    Example:
-        # ignore large dataset folders
-        */datasets/*
-        */model_weights/*
-        *.tmp
-    """
     if not IGNORE_FILE.exists():
-        # Create a helpful default file on first run
         IGNORE_FILE.write_text(
             "# FileChat ignore file — one glob pattern per line\n"
             "# Examples:\n"
@@ -80,10 +66,32 @@ def load_ignore_patterns() -> list[str]:
 
 
 def is_ignored(path: str, patterns: list[str]) -> bool:
-    for pat in patterns:
-        if fnmatch.fnmatch(path, pat):
-            return True
-    return False
+    return any(fnmatch.fnmatch(path, p) for p in patterns)
+
+
+# ── Write counter + VACUUM (#16) ─────────────────────────────────────────────
+_write_count = 0
+_write_lock  = threading.Lock()
+
+
+def _maybe_vacuum(conn: sqlite3.Connection) -> None:
+    """Increment write counter; VACUUM in background every VACUUM_EVERY writes."""
+    global _write_count
+    with _write_lock:
+        _write_count += 1
+        if _write_count % VACUUM_EVERY == 0:
+            count = _write_count
+            threading.Thread(target=_run_vacuum, args=(count,), daemon=True).start()
+
+
+def _run_vacuum(count: int) -> None:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("VACUUM")
+        conn.close()
+        log.info("VACUUM complete after %d writes.", count)
+    except Exception as e:
+        log.warning("VACUUM failed: %s", e)
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -112,10 +120,8 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str]) -> N
         if not p.is_file():
             return
         st = p.stat()
-        # (#10) Skip zero-byte files — temp locks, empty placeholders, etc.
         if st.st_size == 0:
             return
-        # (#1) Skip ignored patterns
         if is_ignored(str(p), ignore_patterns):
             return
         conn.execute(
@@ -123,6 +129,7 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str]) -> N
             (str(p), p.name, p.suffix.lower().lstrip("."), st.st_size, st.st_mtime),
         )
         conn.commit()
+        _maybe_vacuum(conn)   # #16
     except (PermissionError, OSError):
         pass
 
@@ -130,28 +137,24 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str]) -> N
 def delete(conn: sqlite3.Connection, path: str) -> None:
     conn.execute("DELETE FROM files WHERE path = ?", (path,))
     conn.commit()
+    _maybe_vacuum(conn)   # #16
 
 
-# ── CPU throttle helper (#19) ─────────────────────────────────────────────────
+# ── CPU throttle ──────────────────────────────────────────────────────────────
 def throttle_if_busy() -> None:
-    """Sleep briefly if 1-min CPU load average is above cap."""
     try:
-        load = os.getloadavg()[0]
-        if load > CPU_LOAD_CAP:
+        if os.getloadavg()[0] > CPU_LOAD_CAP:
             time.sleep(THROTTLE_SEC)
     except OSError:
         pass
 
 
-# ── Initial full scan ─────────────────────────────────────────────────────────
+# ── Full scan ─────────────────────────────────────────────────────────────────
 def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
     log.info("Starting full scan of %s …", WATCH_PATH)
-    # Write progress to /tmp so chat.py can show it during boot
     progress_file = Path("/tmp/filefinder.booting")
     count = 0
-
     for root, dirs, files in os.walk(WATCH_PATH, followlinks=False):
-        # Prune skipped and hidden directories in-place
         dirs[:] = [
             d for d in dirs
             if d not in SKIP_DIRS
@@ -164,21 +167,15 @@ def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
             full_path = os.path.join(root, fname)
             upsert(conn, full_path, ignore_patterns)
             count += 1
-            # (#19) Throttle if system is busy
             if count % 100 == 0:
                 throttle_if_busy()
                 progress_file.write_text(str(count))
-
     progress_file.unlink(missing_ok=True)
     log.info("Full scan complete — %d files indexed.", count)
 
 
-# ── Debouncer (#6) ────────────────────────────────────────────────────────────
+# ── Debouncer ─────────────────────────────────────────────────────────────────
 class Debouncer:
-    """
-    Coalesces rapid filesystem events on the same path.
-    A pending upsert for path X is reset if X fires again within DEBOUNCE_SEC.
-    """
     def __init__(self, conn: sqlite3.Connection, ignore_patterns: list[str]):
         self.conn = conn
         self.ignore_patterns = ignore_patterns
@@ -206,7 +203,7 @@ class Debouncer:
         upsert(self.conn, path, self.ignore_patterns)
 
 
-# ── Watchdog event handler ────────────────────────────────────────────────────
+# ── Watchdog ──────────────────────────────────────────────────────────────────
 class Handler(FileSystemEventHandler):
     def __init__(self, debouncer: Debouncer):
         self.db = debouncer
@@ -236,10 +233,10 @@ if __name__ == "__main__":
     full_scan(conn, ignore_patterns)
 
     debouncer = Debouncer(conn, ignore_patterns)
-    observer = Observer()
+    observer  = Observer()
     observer.schedule(Handler(debouncer), WATCH_PATH, recursive=True)
     observer.start()
-    log.info("Watching %s for changes. Press Ctrl+C to stop.", WATCH_PATH)
+    log.info("Watching %s for changes.", WATCH_PATH)
 
     try:
         while True:
