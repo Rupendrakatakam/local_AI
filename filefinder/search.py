@@ -481,6 +481,75 @@ def _resolve_directory(hint: Optional[str]) -> Optional[str]:
     return str(Path.home() / hint)
 
 
+# ── Semantic Search & Fusion (Phase 2) ───────────────────────────────────────
+def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
+    """Search by meaning using vector similarity in LanceDB."""
+    try:
+        from embedder import get_pipeline
+        pipeline = get_pipeline()
+        model = pipeline._get_text_model()
+        table = pipeline._get_db()
+        if model is None or table is None:
+            return []
+            
+        q_vec = model.encode([query], normalize_embeddings=True, show_progress_bar=False).tolist()[0]
+        results = table.search(q_vec).limit(limit * 3).to_pandas()
+        
+        seen = {}
+        for _, row in results.iterrows():
+            p = row["path"]
+            if p not in seen:
+                seen[p] = row
+                
+        file_results = []
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        for p, row in list(seen.items())[:limit]:
+            r = conn.execute(
+                "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
+            ).fetchone()
+            if r:
+                file_results.append(FileResult(**dict(r)))
+        conn.close()
+        return file_results
+    except Exception:
+        return []
+
+
+def _rrf_fusion(keyword_results: list[FileResult], semantic_results: list[FileResult], k: int = 60) -> list[FileResult]:
+    """Merge keyword and semantic results using Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+    path_to_result: dict[str, FileResult] = {}
+    
+    for rank, r in enumerate(keyword_results):
+        scores[r.path] = scores.get(r.path, 0.0) + 1.0 / (k + rank + 1)
+        path_to_result[r.path] = r
+        
+    for rank, r in enumerate(semantic_results):
+        scores[r.path] = scores.get(r.path, 0.0) + 1.0 / (k + rank + 1)
+        path_to_result[r.path] = r
+        
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [path_to_result[p] for p, _ in ranked]
+
+
+def _needs_semantic(query: str) -> bool:
+    """Heuristic: use semantic search for abstract/NL queries."""
+    words = query.split()
+    if any(w.startswith("type:") for w in words):
+        return False
+    if "." in query and " " not in query:
+        return False
+    if len(words) >= 3:
+        return True
+        
+    abstract_signals = {"find", "show", "get", "about", "related", "similar",
+                        "like", "with", "containing", "regarding", "notes", "report", "what", "how"}
+    if any(w.lower() in abstract_signals for w in words):
+        return True
+    return False
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def quick_search(query: str, limit: int = 15) -> list[FileResult]:
     results = _fts_search([query], extensions=None, limit=limit)
@@ -543,8 +612,17 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     results = _fts_search(keywords, extensions, directory, limit)
     if not results:
         results = _db_search(keywords, extensions, directory, limit)
-    if results:
-        return _rerank(atoms, _filter_and_clean(results)), False
+        
+    keyword_results = _filter_and_clean(results)
+    
+    if _needs_semantic(stripped):
+        semantic_results = _semantic_search(stripped, limit)
+        if semantic_results:
+            fused = _rrf_fusion(keyword_results, semantic_results)
+            return fused, False
+            
+    if keyword_results:
+        return _rerank(atoms, keyword_results), False
 
     # 3. Drop extension
     if extensions:

@@ -274,11 +274,20 @@ def show_stats() -> None:
         return
     ollama_s = "[green]✓ Ollama online[/green]" if check_ollama() else "[yellow]⚠ Ollama offline — regex fallback[/yellow]"
     hidden_s = "[cyan]ON[/cyan]" if get_show_hidden() else "[dim]OFF[/dim]"
+    try:
+        from embedder import get_pipeline
+        pipeline = get_pipeline()
+        progress = pipeline.get_progress()
+        embed_s = f"[blue]Embeddings: {progress['done']:,}/{progress['total']:,} ({progress['pct']}%) — {progress['errors']} errors[/blue]"
+    except ImportError:
+        embed_s = "[yellow]Embeddings: not available (missing dependencies)[/yellow]"
+
     console.print(Panel(
         f"[green]✓[/green] Index ready — [cyan]{s['total']:,}[/cyan] files\n"
         f"[dim]DB: {s['db_path']}[/dim]\n"
         f"{ollama_s}\n"
-        f"Hidden files: {hidden_s}",
+        f"Hidden files: {hidden_s}\n"
+        f"{embed_s}",
         title="Index Stats", border_style="cyan", width=65,
     ))
 
