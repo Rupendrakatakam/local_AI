@@ -49,7 +49,7 @@ class EmbeddingPipeline:
         self._image_table = None
         
         self._worker_thread = None
-        self._queue = PriorityQueue()
+        self._queue = PriorityQueue(maxsize=500)
         self._stop_event = threading.Event()
         self._progress = {"total": 0, "done": 0, "errors": 0}
 
@@ -116,8 +116,13 @@ class EmbeddingPipeline:
             from sentence_transformers import SentenceTransformer
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._text_model = SentenceTransformer(TEXT_EMBEDDING_MODEL, device=device)
-            log.info("Loaded text model %s on %s", TEXT_EMBEDDING_MODEL, device)
+            # Try offline mode first to prevent 30+ HTTP requests to HF Hub
+            try:
+                self._text_model = SentenceTransformer(TEXT_EMBEDDING_MODEL, device=device, local_files_only=True)
+                log.info("Loaded text model %s (offline) on %s", TEXT_EMBEDDING_MODEL, device)
+            except Exception:
+                self._text_model = SentenceTransformer(TEXT_EMBEDDING_MODEL, device=device)
+                log.info("Loaded text model %s (downloaded) on %s", TEXT_EMBEDDING_MODEL, device)
             return self._text_model
         except ImportError:
             return None
@@ -130,7 +135,10 @@ class EmbeddingPipeline:
             from sentence_transformers import SentenceTransformer
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._clip_model = SentenceTransformer("clip-ViT-B-32", device=device)
+            try:
+                self._clip_model = SentenceTransformer("clip-ViT-B-32", device=device, local_files_only=True)
+            except Exception:
+                self._clip_model = SentenceTransformer("clip-ViT-B-32", device=device)
             log.info("Loaded image model clip-ViT-B-32 on %s", device)
             return self._clip_model
         except ImportError:
@@ -292,8 +300,12 @@ class EmbeddingPipeline:
         ext = Path(path).suffix.lower()
         if ext in EMBEDDABLE_EXTS:
             priority = 0 if ext in PRIORITY_EXTS else 1
-            self._queue.put((priority, path, mtime))
-            self._progress["total"] += 1
+            try:
+                # Use timeout to prevent complete deadlock if queue is full
+                self._queue.put((priority, path, mtime), timeout=5)
+                self._progress["total"] += 1
+            except Exception:
+                log.warning("Embedding queue full, dropping %s", path)
             
     def get_progress(self) -> dict:
         total = max(1, self._progress["total"])
@@ -358,7 +370,6 @@ class EmbeddingPipeline:
             if text:
                 try:
                     from db_utils import get_shard_path
-                    import sqlite3
                     db_path = get_shard_path(path)
                     db_path.parent.mkdir(parents=True, exist_ok=True)
                     conn = sqlite3.connect(db_path)
@@ -387,11 +398,8 @@ class EmbeddingPipeline:
         try:
             from db_utils import get_shard_path
             db_path = get_shard_path(path)
-            db_path.parent.mkdir(parents=True, exist_ok=True)
             
             conn = sqlite3.connect(db_path)
-            # Create hash table if missing
-            conn.execute("CREATE TABLE IF NOT EXISTS embedding_hashes (path TEXT PRIMARY KEY, hash TEXT)")
             
             # Check existing hash
             cursor = conn.execute("SELECT hash FROM embedding_hashes WHERE path = ?", (path,))
@@ -408,7 +416,6 @@ class EmbeddingPipeline:
             conn.commit()
             
             # Feature 5.2: Auto-Tagging
-            conn.execute("CREATE TABLE IF NOT EXISTS file_tags (path TEXT PRIMARY KEY, tags TEXT)")
             cursor = conn.execute("SELECT tags FROM file_tags WHERE path = ?", (path,))
             if not cursor.fetchone():
                 try:

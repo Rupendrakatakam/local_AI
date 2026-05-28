@@ -116,9 +116,11 @@ class SuggestionCompleter(Completer):
 def _regex_search(pattern: str, limit: int = 50) -> list[FileResult]:
     """
     Bypass LLM and cascade entirely.
-    Uses a Python regex UDF registered on the SQLite connection.
+    Uses a Python regex UDF registered on each shard's SQLite connection.
     """
-    if not DB_PATH.exists():
+    from db_utils import get_all_shard_paths
+    shards = get_all_shard_paths()
+    if not shards:
         console.print("[red]Index not ready.[/red]")
         return []
     try:
@@ -127,27 +129,33 @@ def _regex_search(pattern: str, limit: int = 50) -> list[FileResult]:
         console.print(f"[red]Invalid regex:[/red] {e}")
         return []
 
-    conn = sqlite3.connect(DB_PATH)
-
-    # Register Python regex as a SQLite function
-    def regex_match(pat: str, value: str) -> int:
+    all_results = []
+    for shard_path in shards:
         try:
-            return 1 if compiled.search(value) else 0
+            conn = sqlite3.connect(shard_path)
+
+            def regex_match(pat: str, value: str) -> int:
+                try:
+                    return 1 if compiled.search(value) else 0
+                except Exception:
+                    return 0
+
+            conn.create_function("REGEXP", 2, regex_match)
+            conn.row_factory = sqlite3.Row
+
+            hidden_clause = "" if get_show_hidden() else "AND name NOT LIKE '.%'"
+            rows = conn.execute(
+                f"SELECT path, name, extension, size, mtime FROM files "
+                f"WHERE REGEXP(?, name) AND size > 0 {hidden_clause} "
+                f"ORDER BY mtime DESC LIMIT ?",
+                (pattern, limit),
+            ).fetchall()
+            conn.close()
+            all_results.extend([FileResult(**dict(r)) for r in rows])
         except Exception:
-            return 0
-
-    conn.create_function("REGEXP", 2, regex_match)
-    conn.row_factory = sqlite3.Row
-
-    hidden_clause = "" if get_show_hidden() else "AND name NOT LIKE '.%'"
-    rows = conn.execute(
-        f"SELECT path, name, extension, size, mtime FROM files "
-        f"WHERE REGEXP(?, name) AND size > 0 {hidden_clause} "
-        f"ORDER BY mtime DESC LIMIT ?",
-        (pattern, limit),
-    ).fetchall()
-    conn.close()
-    return [FileResult(**dict(r)) for r in rows]
+            pass
+    all_results.sort(key=lambda x: x.mtime, reverse=True)
+    return all_results[:limit]
 
 
 # ── Boot progress bar (#22) ───────────────────────────────────────────────────
@@ -458,22 +466,29 @@ def main() -> None:
             console.print(f"  Hidden files: {'[cyan]ON[/cyan]' if state else '[dim]OFF[/dim]'}")
             continue
         if low == "/rebuild":
-            console.print("[yellow]Rebuilding FTS5 + trigrams...[/yellow]")
+            console.print("[yellow]Rebuilding FTS5 + trigrams across all shards...[/yellow]")
             try:
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute("DELETE FROM files_fts")
-                conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
-                conn.execute("DELETE FROM name_trigrams")
+                from db_utils import get_all_shard_paths
                 from indexer import _generate_trigrams
-                rows = conn.execute("SELECT rowid, name FROM files").fetchall()
-                batch = []
-                for rid, name in rows:
-                    for tg in _generate_trigrams(name):
-                        batch.append((tg, rid))
-                conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", batch)
-                conn.commit()
-                conn.close()
-                console.print(f"[green]✓ Rebuilt FTS5 + trigrams for {len(rows):,} files[/green]")
+                total_files = 0
+                for shard_path in get_all_shard_paths():
+                    try:
+                        conn = sqlite3.connect(shard_path)
+                        conn.execute("DELETE FROM files_fts")
+                        conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
+                        conn.execute("DELETE FROM name_trigrams")
+                        rows = conn.execute("SELECT rowid, name FROM files").fetchall()
+                        batch = []
+                        for rid, name in rows:
+                            for tg in _generate_trigrams(name):
+                                batch.append((tg, rid))
+                        conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", batch)
+                        conn.commit()
+                        conn.close()
+                        total_files += len(rows)
+                    except Exception as e:
+                        console.print(f"[yellow]Skipped shard {shard_path.name}: {e}[/yellow]")
+                console.print(f"[green]✓ Rebuilt FTS5 + trigrams for {total_files:,} files across {len(get_all_shard_paths())} shards[/green]")
             except Exception as e:
                 console.print(f"[red]Rebuild failed: {e}[/red]")
             continue

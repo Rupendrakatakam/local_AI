@@ -34,8 +34,11 @@ def get_all_shard_paths() -> list[Path]:
     """Return a list of all existing SQLite shard database paths."""
     if not BASE_DIR.exists():
         return []
-    # If legacy DB exists, include it as well (or the migration process will handle it)
-    shards = list(BASE_DIR.glob("index_*.db"))
+    # Filter out dot-directory shards (e.g. index_.git.db) — these should never be searched
+    shards = [
+        p for p in BASE_DIR.glob("index_*.db")
+        if not p.stem.startswith("index_.")  # excludes index_.git, index_.cache, etc.
+    ]
     legacy = BASE_DIR / "index.db"
     if legacy.exists() and legacy not in shards:
         shards.append(legacy)

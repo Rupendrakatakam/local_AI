@@ -149,13 +149,13 @@ def get_time_boost(path: str) -> float:
         block = current_hour // 4
         
         conn = get_behavior_db()
-        # Find all paths opened in this block
-        cur = conn.execute("SELECT path, timestamp FROM opens")
-        count = 0
-        for p, ts in cur.fetchall():
-            dt = datetime.datetime.fromtimestamp(ts)
-            if (dt.hour // 4) == block and Path(p).suffix.lower() == ext:
-                count += 1
+        # Find all paths opened in this block that match the extension
+        query = """
+            SELECT count(*) FROM opens 
+            WHERE path LIKE ? 
+            AND CAST(strftime('%H', datetime(timestamp, 'unixepoch', 'localtime')) AS INTEGER) / 4 = ?
+        """
+        count = conn.execute(query, (f"%{ext}", block)).fetchone()[0]
         conn.close()
         
         return min(5.0, count * 0.5)

@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="FileChat — AI-powered local file search assistant">
     <title>FileChat</title>
     <!-- Use Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -655,10 +656,10 @@
                 tr.onclick = () => selectResult(idx);
                 
                 // Confidence Bar (Update 59)
-                // Just a mock heuristic based on rank for UI demo purposes since score isn't in API yet
                 let confClass = 'conf-low';
-                if (idx < 3) confClass = 'conf-high';
-                else if (idx < 10) confClass = 'conf-med';
+                let score = r.score || 0;
+                if (score > 60) confClass = 'conf-high';
+                else if (score > 30) confClass = 'conf-med';
 
                 tr.innerHTML = `
                     <div class="confidence-indicator ${confClass}"></div>
@@ -769,7 +770,8 @@
             
             content.innerHTML = `
                 <div style="text-align: center; padding: 40px;">
-                    <p style="margin-top: 15px; color: #94a3b8; font-size: 16px;">Analyzing your folders... This may take up to a minute depending on your local model speed.</p>
+                    <div class="chat-spinner" style="margin: 0 auto;"></div>
+                    <p style="margin-top: 15px; color: var(--text-dim); font-size: 16px;">Analyzing your folders... This may take up to a minute depending on your local model speed.</p>
                 </div>
             `;
             modal.style.display = 'flex';
@@ -822,14 +824,14 @@
                     totalWasted += dupe.wasted_size;
                     const wastedMB = (dupe.wasted_size / (1024 * 1024)).toFixed(2);
                     html += `
-                        <div style="background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #334155;">
-                            <h3 style="color: #38bdf8; margin: 0 0 10px 0;">Duplicate Group (${dupe.count} files) <span style="color: #f43f5e; font-size: 0.9em; float: right;">-${wastedMB} MB wasted</span></h3>
+                        <div style="background: var(--surface); padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid var(--border);">
+                            <h3 style="color: var(--accent-cyan); margin: 0 0 10px 0;">Duplicate Group (${dupe.count} files) <span style="color: var(--accent-red); font-size: 0.9em; float: right;">-${wastedMB} MB wasted</span></h3>
                             <ul style="margin: 0; padding-left: 20px; list-style-type: none;">
                     `;
                     dupe.files.forEach(f => {
                         html += `<li style="margin-bottom: 5px; word-break: break-all;">
-                                   <span style="color: #94a3b8; margin-right: 10px;">📄</span>
-                                   <a href="javascript:void(0)" onclick="openFile('${f.path.replace(/'/g, "\\'")}')" style="color: #e2e8f0; text-decoration: underline;">${escapeHtml(f.path)}</a>
+                                   <span style="color: var(--text-dim); margin-right: 10px;">📄</span>
+                                   <a href="javascript:void(0)" onclick="openFile('${f.path.replace(/'/g, "\\'")}')" style="color: var(--text); text-decoration: underline;">${escapeHtml(f.path)}</a>
                                  </li>`;
                     });
                     html += `</ul></div>`;
@@ -953,8 +955,8 @@
                         datasets: [{
                             label: 'Activity',
                             data: data.hourly,
-                            backgroundColor: 'rgba(0, 229, 255, 0.6)',
-                            borderColor: 'rgba(0, 229, 255, 1)',
+                            backgroundColor: 'var(--accent-cyan)',
+                            borderColor: 'var(--accent-cyan)',
                             borderWidth: 1,
                             borderRadius: 4
                         }]

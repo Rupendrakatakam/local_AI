@@ -91,6 +91,7 @@ class FileResult:
     extension: str
     size: int
     mtime: float
+    score: float = 0.0
 
     @property
     def size_human(self) -> str:
@@ -177,8 +178,9 @@ FALLBACK_SYNONYMS = {
 }
 
 
+@lru_cache(maxsize=512)
 def _get_synonyms(word: str) -> list[str]:
-    """Return synonyms for a word (excluding the word itself)."""
+    """Return synonyms for a word (excluding the word itself). Cached for performance."""
     syns = set()
     try:
         from nltk.corpus import wordnet
@@ -461,9 +463,11 @@ def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[F
             clean_atoms.append(f'"{a.strip()}"')
             
     if not clean_atoms:
+        conn.close()
         return []
-        
-    match_query = " ".join(clean_atoms)
+    
+    # Use OR for content search — documents are long, partial matches are valuable
+    match_query = " OR ".join(clean_atoms)
     
     query_str = """
         SELECT files.path, files.name, files.extension, files.size, files.mtime 
@@ -680,7 +684,9 @@ def _rerank(query_atoms: list[str], results: list[FileResult]) -> list[FileResul
     """Re-rank results by relevance score instead of just mtime."""
     if not query_atoms or len(results) <= 1:
         return results
-    return sorted(results, key=lambda r: _score_result(query_atoms, r), reverse=True)
+    for r in results:
+        r.score = _score_result(query_atoms, r)
+    return sorted(results, key=lambda r: r.score, reverse=True)
 
 
 # ── Ollama intent parser ──────────────────────────────────────────────────────
@@ -777,17 +783,25 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
                 except Exception:
                     pass
         
-        # Hydrate paths into FileResults
+        # Hydrate paths into FileResults from ALL shards (not just legacy DB)
         final_results = []
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        for p in file_results[:limit*2]: # fetch extra, since we combined them
-            r = conn.execute(
-                "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
-            ).fetchone()
-            if r:
-                final_results.append(FileResult(**dict(r)))
-        conn.close()
+        seen_paths = set()
+        for shard_path in get_all_shard_paths():
+            try:
+                conn = sqlite3.connect(shard_path)
+                conn.row_factory = sqlite3.Row
+                for p in file_results[:limit*2]:
+                    if p in seen_paths:
+                        continue
+                    r = conn.execute(
+                        "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
+                    ).fetchone()
+                    if r:
+                        final_results.append(FileResult(**dict(r)))
+                        seen_paths.add(p)
+                conn.close()
+            except Exception:
+                pass
         return final_results[:limit]
     except Exception as e:
         import logging
@@ -806,7 +820,15 @@ def _rrf_fusion(*result_lists: list[FileResult], k: int = 60) -> list[FileResult
             path_to_result[r.path] = r
             
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [path_to_result[p] for p, _ in ranked]
+    
+    final_results = []
+    # RRF scores are typically very small, multiply by 100 for display
+    for p, s in ranked:
+        r = path_to_result[p]
+        r.score = s * 100
+        final_results.append(r)
+        
+    return final_results
 
 
 def _needs_semantic(query: str) -> bool:
@@ -865,12 +887,17 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         from aliases import get_alias
         alias_path = get_alias(stripped)
         if alias_path:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            r = conn.execute("SELECT path, name, extension, size, mtime FROM files WHERE path=?", (alias_path,)).fetchone()
-            conn.close()
-            if r:
-                return [FileResult(**dict(r))], False
+            # Search all shards for the aliased file
+            for shard_path in get_all_shard_paths():
+                try:
+                    conn = sqlite3.connect(shard_path)
+                    conn.row_factory = sqlite3.Row
+                    r = conn.execute("SELECT path, name, extension, size, mtime FROM files WHERE path=?", (alias_path,)).fetchone()
+                    conn.close()
+                    if r:
+                        return [FileResult(**dict(r))], False
+                except Exception:
+                    pass
     except ImportError:
         pass
 

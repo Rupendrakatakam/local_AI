@@ -108,8 +108,12 @@ def api_preview():
             return jsonify({"type": "error", "content": f"Failed to read XLSX: {e}"})
         
     # Text preview: Return the first 2000 characters
-    text_exts = {".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", 
-                 ".yaml", ".yml", ".sh", ".rs", ".go", ".c", ".cpp", ".h", ".csv"}
+    text_exts = {
+        ".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", 
+        ".yaml", ".yml", ".sh", ".rs", ".go", ".c", ".cpp", ".h", ".csv",
+        ".java", ".rb", ".xml", ".sql", ".toml", ".ini", ".cfg", ".r", 
+        ".swift", ".kt", ".php", ".bash", ".zsh", ".log", ".diff", ".patch", ".env"
+    }
     if ext in text_exts or not ext:
         try:
             text = Path(path).read_text(errors="replace")[:2000]
@@ -243,7 +247,7 @@ def api_smart_folders():
         OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
         MODEL = cfg("ollama_model", "phi3:mini")
         
-        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=45)
+        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=90)
         resp.raise_for_status()
         
         suggestion = resp.json().get("response", "").strip()
@@ -341,7 +345,7 @@ User Message: {user_message}"""
         OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
         MODEL = cfg("ollama_model", "phi3:mini")
         
-        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=45)
+        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=90)
         resp.raise_for_status()
         
         reply = resp.json().get("response", "").strip()
