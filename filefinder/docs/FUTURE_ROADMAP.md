@@ -36,7 +36,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 1.2 🔴 Full-Text Content Search for Documents
+### 1.2 🟢 Full-Text Content Search for Documents
 
 **What:** Search *inside* the text content of PDFs, DOCX, and text files — not just filenames.
 
@@ -164,7 +164,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 2.4 🟡 File Preview Improvements
+### 2.4 🟢 File Preview Improvements
 
 **What:**
 - Syntax highlighting for code files (with language detection)

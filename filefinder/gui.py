@@ -73,10 +73,39 @@ def api_preview():
         
     ext = Path(path).suffix.lower()
     
-    # Image preview: Return the file directly
-    if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"):
-        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+    # Media preview (image, video, audio): Return the file directly
+    if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp",
+               ".mp4", ".webm", ".mov", ".avi", ".mkv",
+               ".mp3", ".wav", ".ogg", ".flac", ".m4a"):
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
         return send_file(path, mimetype=mime)
+        
+    # Spreadsheet preview: Return first 50 rows as JSON table
+    if ext == ".csv":
+        try:
+            import csv
+            with open(path, newline='', encoding='utf-8', errors='replace') as f:
+                reader = csv.reader(f)
+                data = [row for i, row in enumerate(reader) if i < 50]
+            return jsonify({"type": "table", "data": data, "extension": "csv"})
+        except Exception as e:
+            return jsonify({"type": "error", "content": f"Failed to read CSV: {e}"})
+            
+    if ext == ".xlsx":
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+            sheet = wb.active
+            data = []
+            for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                if i >= 50:
+                    break
+                data.append([str(c) if c is not None else "" for c in row])
+            return jsonify({"type": "table", "data": data, "extension": "xlsx"})
+        except ImportError:
+            return jsonify({"type": "error", "content": "openpyxl not installed for XLSX previews (pip install openpyxl)."})
+        except Exception as e:
+            return jsonify({"type": "error", "content": f"Failed to read XLSX: {e}"})
         
     # Text preview: Return the first 2000 characters
     text_exts = {".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", 

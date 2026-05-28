@@ -122,6 +122,16 @@ def _extract_type_filter(query: str) -> tuple[Optional[list[str]], str]:
     return None, query
 
 
+def _extract_content_filter(query: str) -> tuple[Optional[str], str]:
+    """Parses 'content:"my text"' or 'content:text'."""
+    match = re.search(r'\bcontent:(?:"([^"]+)"|(\S+))', query, re.IGNORECASE)
+    if match:
+        content_query = match.group(1) or match.group(2)
+        cleaned = query[:match.start()].strip() + " " + query[match.end():].strip()
+        return content_query, cleaned.strip()
+    return None, query
+
+
 # ── Natural language category detector ────────────────────────────────────────
 def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
     for word in words:
@@ -334,6 +344,40 @@ def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
     finally:
         conn.close()
         
+    return results
+
+
+def _content_search(query: str, limit: int = 15) -> list[FileResult]:
+    if not DB_PATH.exists():
+        return []
+    conn = _get_conn()
+    
+    clean_atoms = []
+    for a in query.replace('"', '').split():
+        if a.strip():
+            clean_atoms.append(f'"{a.strip()}"')
+            
+    if not clean_atoms:
+        return []
+        
+    match_query = " ".join(clean_atoms)
+    
+    query_str = """
+        SELECT files.path, files.name, files.extension, files.size, files.mtime 
+        FROM file_content_fts 
+        JOIN files ON files.path = file_content_fts.path 
+        WHERE file_content_fts MATCH ? AND files.size > 0
+    """
+    if not get_show_hidden():
+        query_str += " AND files.name NOT LIKE '.%'"
+        
+    query_str += " ORDER BY bm25(file_content_fts) LIMIT ?"
+    
+    try:
+        rows = conn.execute(query_str, [match_query, limit]).fetchall()
+        results = [FileResult(**dict(r)) for r in rows]
+    except sqlite3.OperationalError:
+        results = []
     return results
 
 
@@ -569,19 +613,16 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
         return []
 
 
-def _rrf_fusion(keyword_results: list[FileResult], semantic_results: list[FileResult], k: int = 60) -> list[FileResult]:
-    """Merge keyword and semantic results using Reciprocal Rank Fusion."""
+def _rrf_fusion(*result_lists: list[FileResult], k: int = 60) -> list[FileResult]:
+    """Merge any number of result lists using Reciprocal Rank Fusion."""
     scores: dict[str, float] = {}
     path_to_result: dict[str, FileResult] = {}
     
-    for rank, r in enumerate(keyword_results):
-        scores[r.path] = scores.get(r.path, 0.0) + 1.0 / (k + rank + 1)
-        path_to_result[r.path] = r
-        
-    for rank, r in enumerate(semantic_results):
-        scores[r.path] = scores.get(r.path, 0.0) + 1.0 / (k + rank + 1)
-        path_to_result[r.path] = r
-        
+    for results in result_lists:
+        for rank, r in enumerate(results):
+            scores[r.path] = scores.get(r.path, 0.0) + 1.0 / (k + rank + 1)
+            path_to_result[r.path] = r
+            
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [path_to_result[p] for p, _ in ranked]
 
@@ -651,6 +692,12 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     except ImportError:
         pass
 
+    # 0. Explicit content: syntax
+    content_query, stripped = _extract_content_filter(stripped)
+    if content_query and not stripped:
+        results = _content_search(content_query, limit)
+        return _filter_and_clean(results), False
+
     # 0. Explicit type: syntax (#18) — e.g. "type:image rupendra"
     type_extensions, stripped = _extract_type_filter(stripped)
 
@@ -687,10 +734,19 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         
     keyword_results = _filter_and_clean(results)
     
+    content_results = []
+    if content_query:
+        content_results = _content_search(content_query, limit)
+    elif len(stripped.split()) > 1:
+        content_results = _content_search(stripped, limit)
+        
+    semantic_results = []
     if _needs_semantic(stripped):
         semantic_results = _semantic_search(stripped, limit)
-        if semantic_results:
-            fused = _rrf_fusion(keyword_results, semantic_results)
+        
+    if semantic_results or content_results:
+        fused = _rrf_fusion(keyword_results, semantic_results, content_results)
+        if fused:
             return fused, False
             
     if keyword_results:

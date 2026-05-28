@@ -298,7 +298,8 @@ class EmbeddingPipeline:
             try:
                 # Throttle if system load is high
                 if os.getloadavg()[0] > 2.0:
-                    time.sleep(0.1)
+                    log.debug("High CPU load detected. Sleeping for 2s.")
+                    time.sleep(2.0)
             except OSError:
                 pass
 
@@ -320,6 +321,17 @@ class EmbeddingPipeline:
             
         if not text or len(text.strip()) < 20:
             return
+            
+        # Store full text in SQLite for fast keyword content search
+        db_path = Path.home() / ".local" / "share" / "filefinder" / "index.db"
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
+            conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.warning("Failed to save content to sqlite: %s", e)
             
         chunks = self.chunk_text(text)
         if not chunks:

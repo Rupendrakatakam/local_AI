@@ -8,29 +8,70 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <style>
         :root {
             /* Dark Mode (Default) */
-            --bg: #0a0a0f;
-            --surface: rgba(255, 255, 255, 0.05);
-            --surface-hover: rgba(255, 255, 255, 0.08);
-            --border: rgba(255, 255, 255, 0.1);
+            --bg: #050508;
+            --surface: rgba(20, 20, 25, 0.6);
+            --surface-hover: rgba(40, 40, 50, 0.7);
+            --border: rgba(255, 255, 255, 0.08);
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
-            --accent-cyan: #00D4FF;
-            --accent-purple: #A78BFA;
-            --glass-blur: blur(20px);
+            --accent-cyan: #00e5ff;
+            --accent-purple: #b39ddb;
+            --glass-blur: blur(24px);
+            --focus-ring: 0 0 0 2px rgba(0, 229, 255, 0.4), 0 0 16px rgba(0, 229, 255, 0.2);
         }
 
         [data-theme="light"] {
             --bg: #f8fafc;
-            --surface: rgba(255, 255, 255, 0.8);
+            --surface: rgba(255, 255, 255, 0.85);
             --surface-hover: rgba(255, 255, 255, 1);
-            --border: rgba(0, 0, 0, 0.1);
+            --border: rgba(0, 0, 0, 0.08);
             --text-main: #0f172a;
             --text-muted: #64748b;
             --accent-cyan: #0284c7;
             --accent-purple: #7c3aed;
+            --focus-ring: 0 0 0 2px rgba(2, 132, 199, 0.4), 0 0 16px rgba(2, 132, 199, 0.1);
+        }
+        
+        [data-theme="monokai"] {
+            --bg: #272822;
+            --surface: rgba(62, 61, 50, 0.85);
+            --surface-hover: rgba(73, 72, 62, 1);
+            --border: rgba(255, 255, 255, 0.1);
+            --text-main: #f8f8f2;
+            --text-muted: #75715e;
+            --accent-cyan: #a6e22e;
+            --accent-purple: #fd971f;
+            --focus-ring: 0 0 0 2px rgba(166, 226, 46, 0.4), 0 0 16px rgba(166, 226, 46, 0.1);
+        }
+
+        [data-theme="nord"] {
+            --bg: #2e3440;
+            --surface: rgba(59, 66, 82, 0.85);
+            --surface-hover: rgba(67, 76, 94, 1);
+            --border: rgba(216, 222, 233, 0.1);
+            --text-main: #eceff4;
+            --text-muted: #d8dee9;
+            --accent-cyan: #88c0d0;
+            --accent-purple: #b48ead;
+            --focus-ring: 0 0 0 2px rgba(136, 192, 208, 0.4), 0 0 16px rgba(136, 192, 208, 0.1);
+        }
+
+        [data-theme="gruvbox"] {
+            --bg: #282828;
+            --surface: rgba(60, 56, 54, 0.85);
+            --surface-hover: rgba(80, 73, 69, 1);
+            --border: rgba(235, 219, 178, 0.1);
+            --text-main: #ebdbb2;
+            --text-muted: #a89984;
+            --accent-cyan: #8ec07c;
+            --accent-purple: #d3869b;
+            --focus-ring: 0 0 0 2px rgba(142, 192, 124, 0.4), 0 0 16px rgba(142, 192, 124, 0.1);
         }
 
         * {
@@ -38,6 +79,22 @@
             margin: 0;
             padding: 0;
             font-family: 'Inter', sans-serif;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
         }
 
         body {
@@ -126,7 +183,7 @@
 
         .search-box input:focus {
             border-color: var(--accent-cyan);
-            box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.2);
+            box-shadow: var(--focus-ring);
         }
 
         .search-box .shortcut-hint {
@@ -171,20 +228,25 @@
             z-index: 10;
         }
 
-        td {
-            padding: 12px 16px;
-            font-size: 14px;
-            border-bottom: 1px solid var(--border);
-            cursor: pointer;
-        }
-
         tr {
-            transition: background 0.15s ease;
+            transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
         }
 
         tr:hover, tr.selected {
             background: var(--surface-hover);
+        }
+
+        td {
+            padding: 12px 16px;
+            font-size: 14px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: padding-left 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        tr:hover td:first-child, tr.selected td:first-child {
+            padding-left: 20px;
         }
 
         .file-name {
@@ -210,6 +272,12 @@
             top: 0;
             bottom: 0;
             width: 3px;
+            transition: width 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        tr:hover .confidence-indicator, tr.selected .confidence-indicator {
+            width: 4px;
+            box-shadow: 0 0 8px currentColor;
         }
         
         .conf-high { background-color: #10b981; }
@@ -227,12 +295,14 @@
             backdrop-filter: var(--glass-blur);
             display: flex;
             flex-direction: column;
-            transition: all 0.3s ease;
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            transform: translateX(20px);
         }
 
         .preview-panel.active {
             width: 40%;
             opacity: 1;
+            transform: translateX(0);
         }
 
         .preview-header {
@@ -294,7 +364,13 @@
         <h1>FileChat</h1>
         <div class="controls">
             <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
-            <button class="icon-btn" id="btn-theme" onclick="toggleTheme()">🌓 Theme</button>
+            <select class="icon-btn" id="themeSelect" onchange="setTheme(this.value)">
+                <option value="dark">🌓 Dark</option>
+                <option value="light">☀️ Light</option>
+                <option value="monokai">🎨 Monokai</option>
+                <option value="nord">❄️ Nord</option>
+                <option value="gruvbox">📦 Gruvbox</option>
+            </select>
         </div>
     </header>
 
@@ -369,15 +445,16 @@
         }
 
         // Dark/Light Theme (Update 66)
-        function toggleTheme() {
-            const current = document.documentElement.getAttribute('data-theme');
-            const target = current === 'light' ? 'dark' : 'light';
-            document.documentElement.setAttribute('data-theme', target);
-            localStorage.setItem('theme', target);
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            const select = document.getElementById('themeSelect');
+            if(select) select.value = theme;
         }
         
         // Initialize theme
-        if (localStorage.getItem('theme') === 'light') toggleTheme();
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        setTheme(savedTheme);
 
         // Search API Call
         async function performSearch(query) {
@@ -456,16 +533,39 @@
             // Fetch Preview
             try {
                 const res = await fetch(`/api/preview?path=${encodeURIComponent(file.path)}`);
-                if (res.headers.get('content-type').includes('image')) {
-                    // Image Preview
+                const contentType = res.headers.get('content-type') || "";
+                
+                if (contentType.includes('image')) {
                     previewContent.innerHTML = `<img src="/api/preview?path=${encodeURIComponent(file.path)}" alt="${file.name}">`;
+                } else if (contentType.includes('video')) {
+                    previewContent.innerHTML = `<video controls style="max-width:100%; border-radius:8px;"><source src="/api/preview?path=${encodeURIComponent(file.path)}"></video>`;
+                } else if (contentType.includes('audio')) {
+                    previewContent.innerHTML = `<audio controls style="width:100%;"><source src="/api/preview?path=${encodeURIComponent(file.path)}"></audio>`;
                 } else {
                     const data = await res.json();
-                    if (data.type === 'text' || data.type === 'pdf') {
-                        let header = data.type === 'pdf' ? `<i>PDF Document - ${data.pages} pages</i><br><br>` : '';
-                        previewContent.innerHTML = `${header}<pre>${escapeHtml(data.content)}</pre>`;
+                    if (data.type === 'table') {
+                        let html = '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+                        data.data.forEach((row, i) => {
+                            html += '<tr>';
+                            row.forEach(cell => {
+                                const tag = i === 0 ? 'th' : 'td';
+                                html += `<${tag} style="border:1px solid var(--border); padding:6px; text-align:left; color:var(--text-main); background:${i===0 ? 'var(--surface-hover)' : 'transparent'};">${escapeHtml(String(cell))}</${tag}>`;
+                            });
+                            html += '</tr>';
+                        });
+                        html += '</table>';
+                        previewContent.innerHTML = html;
+                    } else if (data.type === 'text') {
+                        if (data.extension === 'md') {
+                            previewContent.innerHTML = marked.parse(data.content);
+                        } else {
+                            const codeHtml = hljs.highlightAuto(data.content).value;
+                            previewContent.innerHTML = `<pre><code>${codeHtml}</code></pre>`;
+                        }
+                    } else if (data.type === 'pdf') {
+                        previewContent.innerHTML = `<i>PDF Document - ${data.pages} pages</i><br><br><pre>${escapeHtml(data.content)}</pre>`;
                     } else {
-                        previewContent.innerHTML = `<i>${data.content}</i>`;
+                        previewContent.innerHTML = `<i>${escapeHtml(data.content || "Unknown preview format.")}</i>`;
                     }
                 }
             } catch (e) {

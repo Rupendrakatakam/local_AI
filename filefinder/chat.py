@@ -28,7 +28,7 @@ from prompt_toolkit.completion import Completer, Completion
 
 console      = Console()
 HISTORY_FILE = Path.home() / ".config" / "filefinder" / "history"
-PAGE_SIZE    = 10
+PAGE_SIZE    = 15
 
 HELP_TEXT = """
 [bold cyan]FileChat[/bold cyan] — Find any file in your home directory
@@ -536,7 +536,7 @@ def main() -> None:
         global _last_query
         _last_query = query
         with console.status("[cyan]Searching…[/cyan]", spinner="dots"):
-            results, is_fuzzy = search(query)
+            results, is_fuzzy = search(query, limit=50)
 
         # Record search in behavior DB for suggestions and analytics
         try:

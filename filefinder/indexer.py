@@ -19,7 +19,8 @@ from watchdog.events import FileSystemEventHandler
 from config_loader import get as cfg
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WATCH_PATH    = str(Path.home())
+watch_cfg = cfg("watch_path", "~")
+WATCH_PATH    = str(Path(watch_cfg).expanduser())
 DB_PATH       = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 LOG_PATH      = Path.home() / ".local" / "share" / "filefinder" / "indexer.log"
 IGNORE_FILE   = Path.home() / ".filefinder_ignore"
@@ -141,11 +142,19 @@ def get_db() -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name COLLATE NOCASE)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ext  ON files(extension)")
     
-    # FTS5 Virtual Table for content indexing
+    # FTS5 Virtual Table for filename indexing
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name, path,
             content='files', content_rowid='rowid',
+            tokenize='unicode61'
+        )
+    """)
+    
+    # FTS5 Virtual Table for full-text content indexing (Batch 5)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
+            path UNINDEXED, content,
             tokenize='unicode61'
         )
     """)
@@ -266,6 +275,7 @@ def delete(conn: sqlite3.Connection, path: str) -> None:
     row = cursor.fetchone()
     if row:
         conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
+    conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
     conn.execute("DELETE FROM files WHERE path = ?", (path,))
     conn.commit()
     _maybe_vacuum(conn)   # #16
