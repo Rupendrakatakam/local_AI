@@ -734,36 +734,64 @@ def _resolve_directory(hint: Optional[str]) -> Optional[str]:
 
 # ── Semantic Search & Fusion (Phase 2) ───────────────────────────────────────
 def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
-    """Search by meaning using vector similarity in LanceDB."""
+    """Search by meaning using vector similarity in LanceDB (Text + Image)."""
     try:
         from embedder import get_pipeline
         pipeline = get_pipeline()
+        
+        file_results = []
+        seen = {}
+        
+        # 1. Text Semantic Search
         model = pipeline._get_text_model()
         table = pipeline._get_db()
-        if model is None or table is None:
-            return []
-            
-        q_vec = model.encode([query], normalize_embeddings=True, show_progress_bar=False).tolist()[0]
-        results = table.search(q_vec).limit(limit * 3).to_pandas()
-        
-        seen = {}
-        for _, row in results.iterrows():
-            p = row["path"]
-            if p not in seen:
-                seen[p] = row
+        if model is not None and table is not None:
+            try:
+                q_vec = model.encode([query], normalize_embeddings=True, show_progress_bar=False).tolist()[0]
+                results = table.search(q_vec).limit(limit * 3).to_pandas()
+                for _, row in results.iterrows():
+                    p = row["path"]
+                    if p not in seen:
+                        seen[p] = True
+                        file_results.append(p)
+            except Exception:
+                pass
                 
-        file_results = []
+        # 2. Image Semantic Search (Feature 1.3)
+        image_table = getattr(pipeline, "_image_table", None)
+        if image_table is not None:
+            # Load CLIP for image text query
+            clip_model = pipeline._get_clip_model()
+            if clip_model is not None:
+                try:
+                    img_q_vec = clip_model.encode([query], convert_to_numpy=True, show_progress_bar=False)[0]
+                    import numpy as np
+                    img_q_vec = img_q_vec / np.linalg.norm(img_q_vec)
+                    
+                    img_results = image_table.search(img_q_vec.tolist()).limit(limit * 3).to_pandas()
+                    for _, row in img_results.iterrows():
+                        p = row["path"]
+                        if p not in seen:
+                            seen[p] = True
+                            file_results.append(p)
+                except Exception:
+                    pass
+        
+        # Hydrate paths into FileResults
+        final_results = []
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        for p, row in list(seen.items())[:limit]:
+        for p in file_results[:limit*2]: # fetch extra, since we combined them
             r = conn.execute(
                 "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
             ).fetchone()
             if r:
-                file_results.append(FileResult(**dict(r)))
+                final_results.append(FileResult(**dict(r)))
         conn.close()
-        return file_results
-    except Exception:
+        return final_results[:limit]
+    except Exception as e:
+        import logging
+        logging.getLogger("search").debug(f"Semantic search failed: {e}")
         return []
 
 

@@ -36,7 +36,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 1.2 🟢 Full-Text Content Search for Documents
+### 1.2 🟢 Full-Text Content Search for Documents [COMPLETED]
 
 **What:** Search *inside* the text content of PDFs, DOCX, and text files — not just filenames.
 
@@ -55,7 +55,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 1.3 🟡 Image Understanding (CLIP + OCR)
+### 1.3 🟡 Image Understanding (CLIP + OCR) [COMPLETED]
 
 **What:** Search for images by describing what's *in* them. "Show me photos of cats" or "find screenshots with error messages".
 
@@ -164,7 +164,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 2.4 🟢 File Preview Improvements
+### 2.4 🟢 File Preview Improvements [COMPLETED]
 
 **What:**
 - Syntax highlighting for code files (with language detection)
@@ -182,7 +182,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 2.5 🟢 Theming System
+### 2.5 🟢 Theming System [COMPLETED]
 
 **What:** Let users choose from multiple color themes (Monokai, Solarized, Nord, Gruvbox) or create custom themes.
 

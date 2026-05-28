@@ -46,6 +46,7 @@ class EmbeddingPipeline:
         self._clip_processor = None
         self._db = None
         self._table = None
+        self._image_table = None
         
         self._worker_thread = None
         self._queue = PriorityQueue()
@@ -87,6 +88,20 @@ class EmbeddingPipeline:
                     pa.field("type", pa.utf8()), # 'text' or 'image'
                 ])
                 self._table = self._db.create_table("chunks", schema=schema)
+                
+            # Initialize image table
+            try:
+                self._image_table = self._db.open_table("image_chunks")
+            except Exception:
+                import pyarrow as pa
+                img_schema = pa.schema([
+                    pa.field("path", pa.utf8()),
+                    pa.field("vector", pa.list_(pa.float32(), 512)),
+                    pa.field("mtime", pa.float64()),
+                    pa.field("extension", pa.utf8()),
+                ])
+                self._image_table = self._db.create_table("image_chunks", schema=img_schema)
+                
             return self._table
         except ImportError:
             log.warning("lancedb not installed — semantic search disabled")
@@ -110,17 +125,16 @@ class EmbeddingPipeline:
     def _get_clip_model(self):
         """Lazy-load the image embedding model (CLIP)."""
         if self._clip_model is not None:
-            return self._clip_model, self._clip_processor
+            return self._clip_model
         try:
-            from transformers import CLIPModel, CLIPProcessor
+            from sentence_transformers import SentenceTransformer
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._clip_model = CLIPModel.from_pretrained(IMAGE_EMBEDDING_MODEL).to(device)
-            self._clip_processor = CLIPProcessor.from_pretrained(IMAGE_EMBEDDING_MODEL)
-            log.info("Loaded image model %s on %s", IMAGE_EMBEDDING_MODEL, device)
-            return self._clip_model, self._clip_processor
+            self._clip_model = SentenceTransformer("clip-ViT-B-32", device=device)
+            log.info("Loaded image model clip-ViT-B-32 on %s", device)
+            return self._clip_model
         except ImportError:
-            return None, None
+            return None
 
     # ── Text Extractors ──────────────────────────────────────────────────────
     def _extract_text_plain(self, path: str) -> str:
@@ -222,26 +236,36 @@ class EmbeddingPipeline:
 
     def embed_image(self, path: str) -> list[float]:
         """Generate CLIP vector for an image."""
-        model, processor = self._get_clip_model()
-        if model is None or processor is None:
+        model = self._get_clip_model()
+        if model is None:
             return []
         try:
             from PIL import Image
-            import torch
             image = Image.open(path).convert("RGB")
-            inputs = processor(images=image, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                image_features = model.get_image_features(**inputs)
-            # Normalize
-            image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
-            # Pad to 384 to match text vectors in the same DB (MiniLM is 384, CLIP ViT-B/32 is 512)
-            # IMPORTANT: For real multimodal fusion in a single table, dimensions MUST match.
-            # LanceDB requires fixed dimension. To store both, we either need 2 tables, 
-            # or pad/project. Since user wants modularity, let's just create a separate table for images!
-            return image_features[0].cpu().tolist()
+            # SentenceTransformer handles preprocessing and returns a numpy array
+            vector = model.encode([image], convert_to_numpy=True, show_progress_bar=False)[0]
+            # Normalize to ensure vector distances (cosine) work properly
+            import numpy as np
+            vector = vector / np.linalg.norm(vector)
+            return vector.tolist()
         except Exception as e:
             log.debug("Image embed failed for %s: %s", path, e)
             return []
+
+    def upsert_image_embeddings(self, path: str, vector: list[float], mtime: float, ext: str):
+        if self._image_table is None:
+            return
+            
+        try:
+            self._image_table.delete(f'path = "{path}"')
+        except Exception:
+            pass
+            
+        if not vector:
+            return
+            
+        rows = [{"path": path, "vector": vector, "mtime": mtime, "extension": ext}]
+        self._image_table.add(rows)
 
     def upsert_text_embeddings(self, path: str, chunks: list[str], vectors: list[list[float]], mtime: float, ext: str):
         table = self._get_db()
@@ -315,9 +339,35 @@ class EmbeddingPipeline:
     def _embed_file(self, path: str, mtime: float):
         ext = Path(path).suffix.lower()
         
-        # Image embedding path (future extension with 2nd table)
+        # Image embedding path
         if ext in {'.jpg', '.jpeg', '.png', '.webp'}:
-            # To be implemented when image table is created
+            img_vector = self.embed_image(path)
+            if img_vector:
+                self.upsert_image_embeddings(path, img_vector, mtime, ext.lstrip('.'))
+                
+            # Optional lightweight OCR fallback via pytesseract
+            text = ""
+            try:
+                import pytesseract
+                from PIL import Image
+                text = pytesseract.image_to_string(Image.open(path))[:5000].strip()
+            except Exception:
+                pass # pytesseract not installed or failed
+                
+            # If we found text in the image, index it in FTS!
+            if text:
+                try:
+                    from db_utils import get_shard_path
+                    import sqlite3
+                    db_path = get_shard_path(path)
+                    db_path.parent.mkdir(parents=True, exist_ok=True)
+                    conn = sqlite3.connect(db_path)
+                    conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
+                    conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    log.debug(f"Failed to save image OCR to sqlite: {e}")
             return
             
         # Text embedding path
