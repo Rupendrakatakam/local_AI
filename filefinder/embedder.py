@@ -356,6 +356,31 @@ class EmbeddingPipeline:
             conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
             conn.execute("INSERT OR REPLACE INTO embedding_hashes(path, hash) VALUES (?, ?)", (path, content_hash))
             conn.commit()
+            
+            # Feature 5.2: Auto-Tagging
+            conn.execute("CREATE TABLE IF NOT EXISTS file_tags (path TEXT PRIMARY KEY, tags TEXT)")
+            cursor = conn.execute("SELECT tags FROM file_tags WHERE path = ?", (path,))
+            if not cursor.fetchone():
+                try:
+                    import requests
+                    from config_loader import get as cfg
+                    OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
+                    MODEL = cfg("ollama_model", "phi3:mini")
+                    
+                    snippet = text[:500]
+                    prompt = f"Given the filename {path} and snippet: '{snippet}', output 1-3 comma-separated categories for this file (e.g. work, personal, finance, code, media, document, homework, tax). Only output the tags, nothing else."
+                    
+                    resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=10)
+                    if resp.status_code == 200:
+                        tags = resp.json().get("response", "").strip().lower()
+                        # Clean up
+                        tags = tags.replace('"', '').replace('.', '').replace('tags:', '').replace('categories:', '').strip()
+                        if tags:
+                            conn.execute("INSERT OR REPLACE INTO file_tags (path, tags) VALUES (?, ?)", (path, tags))
+                            conn.commit()
+                except Exception as tag_e:
+                    log.debug("Auto-tagging failed for %s: %s", path, tag_e)
+
             conn.close()
         except Exception as e:
             log.warning("Failed to save content/hash to sqlite: %s", e)

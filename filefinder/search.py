@@ -126,6 +126,16 @@ def _extract_content_filter(query: str) -> tuple[Optional[str], str]:
     return None, query
 
 
+def _extract_tag_filter(query: str) -> tuple[Optional[str], str]:
+    """Parses 'tag:finance' or 'tag:"my tag"'."""
+    match = re.search(r'\btag:(?:"([^"]+)"|(\S+))', query, re.IGNORECASE)
+    if match:
+        tag_query = match.group(1) or match.group(2)
+        cleaned = query[:match.start()].strip() + " " + query[match.end():].strip()
+        return tag_query.lower(), cleaned.strip()
+    return None, query
+
+
 # ── Natural language category detector ────────────────────────────────────────
 def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
     for word in words:
@@ -474,6 +484,46 @@ def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[F
     return results
 
 
+def _tag_search(query: str, limit: int = 15) -> list[FileResult]:
+    shards = get_all_shard_paths()
+    if not shards: return []
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        futures = [executor.submit(_tag_search_single, p, query, limit) for p in shards]
+        for f in concurrent.futures.as_completed(futures):
+            all_results.extend(f.result())
+    return all_results[:limit]
+
+def _tag_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
+    
+    clean_query = f"%{query}%"
+    
+    query_str = """
+        SELECT files.path, files.name, files.extension, files.size, files.mtime 
+        FROM file_tags 
+        JOIN files ON files.path = file_tags.path 
+        WHERE file_tags.tags LIKE ? AND files.size > 0
+    """
+    if not get_show_hidden():
+        query_str += " AND files.name NOT LIKE '.%'"
+        
+    query_str += " LIMIT ?"
+    
+    try:
+        rows = conn.execute(query_str, [clean_query, limit]).fetchall()
+        results = [FileResult(**dict(r)) for r in rows]
+    except sqlite3.OperationalError:
+        results = []
+    finally:
+        conn.close()
+    return results
+
+
 def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
     """Lazy-load recent filenames into memory for fuzzy matching."""
     global _fuzzy_cache, _fuzzy_cache_time
@@ -800,6 +850,11 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     content_query, stripped = _extract_content_filter(stripped)
     if content_query and not stripped:
         results = _content_search(content_query, limit)
+        return _filter_and_clean(results), False
+        
+    tag_query, stripped = _extract_tag_filter(stripped)
+    if tag_query and not stripped:
+        results = _tag_search(tag_query, limit)
         return _filter_and_clean(results), False
 
     # 0. Explicit type: syntax (#18) — e.g. "type:image rupendra"

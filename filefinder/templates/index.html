@@ -445,6 +445,7 @@
         <h1>FileChat</h1>
         <div class="controls">
             <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">📁 Smart Folders</button>
+            <button class="icon-btn" id="btn-duplicates" onclick="fetchDuplicates()">🔍 Find Duplicates</button>
             <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
             <select class="icon-btn" id="themeSelect" onchange="setTheme(this.value)">
                 <option value="dark">🌓 Dark</option>
@@ -505,6 +506,21 @@
             <div id="smartFoldersContent" style="color: #e2e8f0; line-height: 1.6; font-size: 15px;">
                 <div style="text-align: center; padding: 40px;">
                     <p style="margin-top: 15px; color: #94a3b8;">Analyzing your folders... This may take up to a minute.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Duplicates Modal -->
+    <div class="modal-overlay" id="duplicatesModal" onclick="if(event.target===this) closeDuplicates()">
+        <div class="modal-content" style="max-width: 800px; max-height: 85vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2>Duplicate Files Detected</h2>
+                <button class="icon-btn" onclick="closeDuplicates()" style="border:none;">✕</button>
+            </div>
+            <div id="duplicatesContent" style="color: #e2e8f0; line-height: 1.6; font-size: 14px;">
+                <div style="text-align: center; padding: 40px;">
+                    <p style="margin-top: 15px; color: #94a3b8;">Scanning for duplicates...</p>
                 </div>
             </div>
         </div>
@@ -748,6 +764,65 @@
 
         // Stats Dashboard (Update 67 + Analytics)
         let hourlyChartInstance = null;
+
+        // Duplicates
+        function closeDuplicates() {
+            document.getElementById('duplicatesModal').style.display = 'none';
+        }
+
+        async function fetchDuplicates() {
+            const modal = document.getElementById('duplicatesModal');
+            const content = document.getElementById('duplicatesContent');
+            
+            content.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <p style="margin-top: 15px; color: #94a3b8; font-size: 16px;">Scanning your shards for duplicate files...</p>
+                </div>
+            `;
+            modal.style.display = 'flex';
+            
+            try {
+                const res = await fetch('/api/duplicates');
+                const data = await res.json();
+                
+                if (data.error) throw new Error(data.error);
+                
+                if (data.duplicates.length === 0) {
+                    content.innerHTML = `<div style="text-align: center; padding: 40px; color: #10b981;">No duplicate files found!</div>`;
+                    return;
+                }
+                
+                let html = '<div style="padding: 10px;">';
+                let totalWasted = 0;
+                
+                data.duplicates.forEach(dupe => {
+                    totalWasted += dupe.wasted_size;
+                    const wastedMB = (dupe.wasted_size / (1024 * 1024)).toFixed(2);
+                    html += `
+                        <div style="background: #1e293b; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #334155;">
+                            <h3 style="color: #38bdf8; margin: 0 0 10px 0;">Duplicate Group (${dupe.count} files) <span style="color: #f43f5e; font-size: 0.9em; float: right;">-${wastedMB} MB wasted</span></h3>
+                            <ul style="margin: 0; padding-left: 20px; list-style-type: none;">
+                    `;
+                    dupe.files.forEach(f => {
+                        html += `<li style="margin-bottom: 5px; word-break: break-all;">
+                                   <span style="color: #94a3b8; margin-right: 10px;">📄</span>
+                                   <a href="javascript:void(0)" onclick="openFile('${f.path.replace(/'/g, "\\'")}')" style="color: #e2e8f0; text-decoration: underline;">${escapeHtml(f.path)}</a>
+                                 </li>`;
+                    });
+                    html += `</ul></div>`;
+                });
+                
+                const totalWastedMB = (totalWasted / (1024 * 1024)).toFixed(2);
+                html = `<div style="background: rgba(244, 63, 94, 0.1); border-left: 4px solid #f43f5e; padding: 10px; margin-bottom: 20px; border-radius: 4px;">
+                           <strong>Total Wasted Space:</strong> ${totalWastedMB} MB across top ${data.duplicates.length} duplicate groups
+                        </div>` + html;
+                html += '</div>';
+                
+                content.innerHTML = html;
+            } catch (e) {
+                content.innerHTML = `<div style="color: #ef4444; padding: 20px;">Error: ${escapeHtml(e.message)}</div>`;
+            }
+        }
 
         function closeAnalytics() {
             document.getElementById('analyticsModal').style.display = 'none';

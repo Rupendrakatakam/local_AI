@@ -331,7 +331,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 5.2 🟡 Auto-Tagging
+### 5.2 🟡 Auto-Tagging [COMPLETED]
 
 **What:** Automatically tag files with categories (e.g., "tax", "homework", "personal", "work") based on their content and location.
 
@@ -348,7 +348,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 5.3 🟡 Duplicate File Detection
+### 5.3 🟡 Duplicate File Detection [COMPLETED]
 
 **What:** Find files that are identical (same hash) or near-identical (similar name, size, content) and offer to clean up duplicates.
 
