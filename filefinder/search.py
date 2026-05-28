@@ -16,6 +16,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 from config_loader import get as cfg
+from suggestions import get_suggestions, track_query
+from db_utils import get_all_shard_paths
+import concurrent.futures
 
 DB_PATH    = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
@@ -24,15 +27,6 @@ CACHE_TTL  = float(cfg("cache_ttl_seconds", 30))
 
 # Update 69: Thread-local connection pool
 _local = threading.local()
-
-def _get_conn() -> sqlite3.Connection:
-    """Thread-local connection pool — reuses one connection per thread."""
-    if not hasattr(_local, 'conn') or _local.conn is None:
-        _local.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA cache_size=-4000")  # 4MB cache
-    return _local.conn
 
 # Update 70: Query result cache
 _query_cache: dict[str, tuple[float, list, bool]] = {}
@@ -145,7 +139,7 @@ def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
     return None, words
 
 
-# ── Keyword normalization ─────────────────────────────────────────────────────
+# ── Keyword normalization & Expansion ───────────────────────────────────────────
 def _normalize_keywords(keywords: list[str]) -> list[str]:
     atoms = []
     for kw in keywords:
@@ -158,26 +152,82 @@ def _normalize_keywords(keywords: list[str]) -> list[str]:
     return [a for a in atoms if not (a in seen or seen.add(a))]
 
 
+FALLBACK_SYNONYMS = {
+    "car": ["vehicle", "automobile", "auto"],
+    "ml": ["machine", "learning", "ai"],
+    "ai": ["artificial", "intelligence", "ml"],
+    "photo": ["image", "picture", "img"],
+    "image": ["photo", "picture", "img"],
+    "video": ["movie", "clip", "mp4"],
+    "doc": ["document", "pdf", "word"],
+    "text": ["txt", "log", "note"],
+    "js": ["javascript"],
+    "py": ["python"],
+    "ts": ["typescript"]
+}
+
+
+def _get_synonyms(word: str) -> list[str]:
+    """Return synonyms for a word (excluding the word itself)."""
+    syns = set()
+    try:
+        from nltk.corpus import wordnet
+        for syn in wordnet.synsets(word)[:3]:
+            for lemma in syn.lemmas()[:3]:
+                w = lemma.name().replace('_', ' ').lower()
+                if w != word:
+                    syns.add(w)
+    except ImportError:
+        pass
+        
+    if word in FALLBACK_SYNONYMS:
+        syns.update(FALLBACK_SYNONYMS[word])
+        
+    return list(syns)
+
+
 # ── SQLite search ─────────────────────────────────────────────────────────────
 def _db_search(keywords: list[str],
                extensions: Optional[list[str]],
                directory: Optional[str] = None,
                limit: int = 15,
                use_or: bool = False) -> list[FileResult]:
-    if not DB_PATH.exists():
+    shards = get_all_shard_paths()
+    if not shards:
         return []
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        futures = [executor.submit(_db_search_single, p, keywords, extensions, directory, limit, use_or) for p in shards]
+        for f in concurrent.futures.as_completed(futures):
+            all_results.extend(f.result())
+    all_results.sort(key=lambda x: x.mtime, reverse=True)
+    return all_results[:limit]
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def _db_search_single(db_path: Path, keywords: list[str],
+               extensions: Optional[list[str]],
+               directory: Optional[str] = None,
+               limit: int = 15,
+               use_or: bool = False) -> list[FileResult]:
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
 
     atoms = _normalize_keywords(keywords)
     clauses, params = [], []
 
     if atoms:
-        kw_clauses = [f"name LIKE ?" for _ in atoms]
-        params.extend([f"%{a}%" for a in atoms])
-        joiner = " OR " if use_or else " AND "
-        clauses.append(f"({joiner.join(kw_clauses)})")
+        if use_or:
+            kw_clauses = [f"name LIKE ?" for _ in atoms]
+            params.extend([f"%{a}%" for a in atoms])
+            clauses.append(f"({' OR '.join(kw_clauses)})")
+        else:
+            for a in atoms:
+                syns = [a] + _get_synonyms(a)
+                sub_clauses = [f"name LIKE ?" for _ in syns]
+                params.extend([f"%{s}%" for s in syns])
+                clauses.append(f"({' OR '.join(sub_clauses)})")
 
     if extensions:
         placeholders = ",".join("?" * len(extensions))
@@ -208,15 +258,15 @@ def _db_search(keywords: list[str],
 # ── Stale cleanup (#14) ───────────────────────────────────────────────────────
 def _cleanup_stale(paths: list[str]) -> None:
     stale = [p for p in paths if not os.path.exists(p)]
-    if not stale or not DB_PATH.exists():
-        return
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in stale])
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+    if not stale: return
+    for db_path in get_all_shard_paths():
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in stale])
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
 
 
 def _filter_and_clean(results: list[FileResult]) -> list[FileResult]:
@@ -244,28 +294,48 @@ def _fts_search(keywords: list[str],
                 extensions: Optional[list[str]],
                 directory: Optional[str] = None,
                 limit: int = 15) -> list[FileResult]:
-    if not DB_PATH.exists():
+    shards = get_all_shard_paths()
+    if not shards:
         return []
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        futures = [executor.submit(_fts_search_single, p, keywords, extensions, directory, limit) for p in shards]
+        for f in concurrent.futures.as_completed(futures):
+            all_results.extend(f.result())
+    all_results.sort(key=lambda x: x.mtime, reverse=True)
+    return all_results[:limit]
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def _fts_search_single(db_path: Path, keywords: list[str],
+                extensions: Optional[list[str]],
+                directory: Optional[str] = None,
+                limit: int = 15) -> list[FileResult]:
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
 
     atoms = _normalize_keywords(keywords)
     if not atoms:
         conn.close()
         return []
 
-    clean_atoms = []
+    clean_groups = []
     for a in atoms:
         clean = a.replace('"', '').strip()
         if clean:
-            clean_atoms.append(f'"{clean}"')
+            syns = _get_synonyms(clean)
+            if syns:
+                group = " OR ".join([f'"{s}"' for s in [clean] + syns])
+                clean_groups.append(f"({group})")
+            else:
+                clean_groups.append(f'"{clean}"')
 
-    if not clean_atoms:
+    if not clean_groups:
         conn.close()
         return []
 
-    match_query = " ".join(clean_atoms)
+    match_query = " AND ".join(clean_groups)
     
     clauses = ["files_fts MATCH ?"]
     params = [match_query]
@@ -305,19 +375,30 @@ def _fts_search(keywords: list[str],
 
 
 def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
-    if not DB_PATH.exists():
+    shards = get_all_shard_paths()
+    if not shards:
         return []
-        
     q_norm = _normalize_for_fuzzy(query)
-    if len(q_norm) < 3:
-        return []
-        
+    if len(q_norm) < 3: return []
     q_trigrams = [q_norm[i:i+3] for i in range(len(q_norm)-2)]
-    if not q_trigrams:
+    if not q_trigrams: return []
+    
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        futures = [executor.submit(_trigram_search_single, p, query, limit) for p in shards]
+        for f in concurrent.futures.as_completed(futures):
+            all_results.extend(f.result())
+    all_results.sort(key=lambda x: x.mtime, reverse=True)
+    return all_results[:limit]
+
+def _trigram_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
+    q_norm = _normalize_for_fuzzy(query)
+    q_trigrams = [q_norm[i:i+3] for i in range(len(q_norm)-2)]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
         return []
-        
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
     
     placeholders = ",".join("?" * len(q_trigrams))
     hidden_clause = "AND files.name NOT LIKE '.%'" if not _show_hidden else ""
@@ -348,9 +429,21 @@ def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
 
 
 def _content_search(query: str, limit: int = 15) -> list[FileResult]:
-    if not DB_PATH.exists():
+    shards = get_all_shard_paths()
+    if not shards: return []
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        futures = [executor.submit(_content_search_single, p, query, limit) for p in shards]
+        for f in concurrent.futures.as_completed(futures):
+            all_results.extend(f.result())
+    return all_results[:limit]
+
+def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
         return []
-    conn = _get_conn()
     
     clean_atoms = []
     for a in query.replace('"', '').split():
@@ -388,16 +481,27 @@ def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
     if _fuzzy_cache and (now - _fuzzy_cache_time) < FUZZY_CACHE_TTL:
         return _fuzzy_cache
 
-    if not DB_PATH.exists():
-        return []
+    shards = get_all_shard_paths()
+    all_rows = []
+    
+    def fetch_rows(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            res = conn.execute(
+                "SELECT name, path, extension, size, mtime FROM files "
+                "WHERE size > 0 AND length(name) >= 4 "
+                "ORDER BY mtime DESC LIMIT 50000"
+            ).fetchall()
+            conn.close()
+            return res
+        except: return []
 
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT name, path, extension, size, mtime FROM files "
-        "WHERE size > 0 AND length(name) >= 4 "
-        "ORDER BY mtime DESC LIMIT 50000"
-    ).fetchall()
-    conn.close()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
+        for r in executor.map(fetch_rows, shards):
+            all_rows.extend(r)
+            
+    all_rows.sort(key=lambda x: x[4], reverse=True)
+    rows = all_rows[:50000]
 
     seen: set[str] = set()
     cache: list[tuple[str, str, str, str, int, float]] = []
@@ -813,8 +917,15 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
 
 
 def db_stats() -> dict:
-    if not DB_PATH.exists():
-        return {"total": 0, "db_path": str(DB_PATH), "ready": False}
-    conn = _get_conn()
-    total = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    return {"total": total, "db_path": str(DB_PATH), "ready": True}
+    shards = get_all_shard_paths()
+    if not shards:
+        return {"total": 0, "db_path": "No shards found", "ready": False}
+    total = 0
+    for db_path in shards:
+        try:
+            conn = sqlite3.connect(db_path)
+            total += conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            conn.close()
+        except:
+            pass
+    return {"total": total, "db_path": f"{len(shards)} shards", "ready": True}

@@ -11,6 +11,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
             /* Dark Mode (Default) */
@@ -357,12 +358,93 @@
             font-size: 13px;
             padding-left: 4px;
         }
+
+        /* Analytics Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(4px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            width: 800px;
+            max-width: 90vw;
+            max-height: 90vh;
+            padding: 24px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .analytics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .analytics-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .analytics-card h3 {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+
+        .analytics-list {
+            list-style: none;
+        }
+
+        .analytics-list li {
+            font-size: 13px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .analytics-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .analytics-item-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 80%;
+        }
+        
+        .analytics-item-count {
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
     <header>
         <h1>FileChat</h1>
         <div class="controls">
+            <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">📁 Smart Folders</button>
             <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
             <select class="icon-btn" id="themeSelect" onchange="setTheme(this.value)">
                 <option value="dark">🌓 Dark</option>
@@ -409,6 +491,47 @@
             </div>
             <div class="preview-content" id="previewContent">
                 Select a file to preview
+            </div>
+        </div>
+    </div>
+
+    <!-- Smart Folders Modal -->
+    <div class="modal-overlay" id="smartFoldersModal" onclick="if(event.target===this) closeSmartFolders()">
+        <div class="modal-content" style="max-width: 800px; max-height: 85vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2>Smart Folder Suggestions</h2>
+                <button class="icon-btn" onclick="closeSmartFolders()" style="border:none;">✕</button>
+            </div>
+            <div id="smartFoldersContent" style="color: #e2e8f0; line-height: 1.6; font-size: 15px;">
+                <div style="text-align: center; padding: 40px;">
+                    <p style="margin-top: 15px; color: #94a3b8;">Analyzing your folders... This may take up to a minute.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analytics Modal -->
+    <div class="modal-overlay" id="analyticsModal" onclick="if(event.target===this) closeAnalytics()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Search History Analytics</h2>
+                <button class="icon-btn" onclick="closeAnalytics()" style="border:none;">✕</button>
+            </div>
+            
+            <div class="analytics-card" style="margin-bottom: 24px;">
+                <h3>Hourly Activity Trend</h3>
+                <canvas id="hourlyChart" height="80"></canvas>
+            </div>
+            
+            <div class="analytics-grid">
+                <div class="analytics-card">
+                    <h3>Top Searched Queries</h3>
+                    <ul class="analytics-list" id="topQueriesList"></ul>
+                </div>
+                <div class="analytics-card">
+                    <h3>Most Opened Files</h3>
+                    <ul class="analytics-list" id="topFilesList"></ul>
+                </div>
             </div>
         </div>
     </div>
@@ -596,14 +719,90 @@
             }
         }
 
-        // Stats Dashboard (Update 67)
+        // Smart Folders
+        function closeSmartFolders() {
+            document.getElementById('smartFoldersModal').style.display = 'none';
+        }
+
+        async function fetchSmartFolders() {
+            const modal = document.getElementById('smartFoldersModal');
+            const content = document.getElementById('smartFoldersContent');
+            
+            content.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <p style="margin-top: 15px; color: #94a3b8; font-size: 16px;">Analyzing your folders... This may take up to a minute depending on your local model speed.</p>
+                </div>
+            `;
+            modal.style.display = 'flex';
+            
+            try {
+                const res = await fetch('/api/smart_folders');
+                const data = await res.json();
+                
+                if (data.error) throw new Error(data.error);
+                content.innerHTML = `<div style="padding: 10px;">${data.suggestion}</div>`;
+            } catch (e) {
+                content.innerHTML = `<div style="color: #ef4444; padding: 20px;">Error: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        // Stats Dashboard (Update 67 + Analytics)
+        let hourlyChartInstance = null;
+
+        function closeAnalytics() {
+            document.getElementById('analyticsModal').style.display = 'none';
+        }
+
         async function fetchStats() {
             try {
-                const res = await fetch('/api/stats');
+                const res = await fetch('/api/analytics');
                 const data = await res.json();
-                alert(`INDEX STATS\nFiles: ${data.total}\nReady: ${data.ready}\n\nHealth: ${JSON.stringify(data.health, null, 2)}`);
+                
+                if (data.error) throw new Error(data.error);
+
+                // Render Top Queries
+                const qList = document.getElementById('topQueriesList');
+                qList.innerHTML = data.top_queries.map(q => 
+                    `<li><span class="analytics-item-name" title="${escapeHtml(q.query)}">${escapeHtml(q.query)}</span> <span class="analytics-item-count">${q.count}</span></li>`
+                ).join('') || '<li>No data yet</li>';
+
+                // Render Top Files
+                const fList = document.getElementById('topFilesList');
+                fList.innerHTML = data.top_files.map(f => {
+                    const name = f.path.split('/').pop() || f.path;
+                    return `<li><span class="analytics-item-name" title="${escapeHtml(f.path)}">${escapeHtml(name)}</span> <span class="analytics-item-count">${f.count}</span></li>`;
+                }).join('') || '<li>No data yet</li>';
+
+                // Render Chart
+                const ctx = document.getElementById('hourlyChart').getContext('2d');
+                if (hourlyChartInstance) hourlyChartInstance.destroy();
+                
+                hourlyChartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: Array.from({length: 24}, (_, i) => `${i}:00`),
+                        datasets: [{
+                            label: 'Activity',
+                            data: data.hourly,
+                            backgroundColor: 'rgba(0, 229, 255, 0.6)',
+                            borderColor: 'rgba(0, 229, 255, 1)',
+                            borderWidth: 1,
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8', stepSize: 1 } },
+                            x: { grid: { display: false }, ticks: { color: '#94a3b8', maxRotation: 45 } }
+                        }
+                    }
+                });
+
+                document.getElementById('analyticsModal').style.display = 'flex';
             } catch (e) {
-                alert(`Stats error: ${e.message}`);
+                alert(`Analytics error: ${e.message}`);
             }
         }
 

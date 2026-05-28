@@ -15,7 +15,7 @@ DEFAULTS = {
     "db_path": "~/.local/share/filefinder/index.db",
     "ollama_url": "http://localhost:11434/api/generate",
     "ollama_model": "phi3:mini",
-    "embedding_model": "all-MiniLM-L6-v2",
+    "embedding_model": "all-mpnet-base-v2",
     "image_model": "openai/clip-vit-base-patch32",
     "chunk_size": 400,
     "chunk_overlap": 80,

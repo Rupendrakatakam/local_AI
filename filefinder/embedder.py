@@ -7,6 +7,7 @@ import os
 import time
 import logging
 import sqlite3
+import hashlib
 import threading
 from pathlib import Path
 from queue import PriorityQueue
@@ -63,16 +64,24 @@ class EmbeddingPipeline:
             LANCEDB_PATH.mkdir(parents=True, exist_ok=True)
             self._db = lancedb.connect(str(LANCEDB_PATH))
             
+            # Get dimension dynamically
+            model = self._get_text_model()
+            dim = model.get_sentence_embedding_dimension() if model else 768
+
             try:
                 self._table = self._db.open_table("chunks")
+                # Check if dimension matches existing schema
+                existing_dim = self._table.schema.field("vector").type.list_size
+                if existing_dim != dim:
+                    log.warning(f"Vector dimension mismatch (model {dim} != db {existing_dim}). Dropping old vectors.")
+                    self._db.drop_table("chunks")
+                    raise ValueError("Dimension mismatch")
             except Exception:
-                # 384 dimensions for all-MiniLM-L6-v2, adjust if changing model.
-                # If upgrading to a 768-dim model, you would change this schema.
                 schema = pa.schema([
                     pa.field("path", pa.utf8()),
                     pa.field("chunk_id", pa.int32()),
                     pa.field("text", pa.utf8()),
-                    pa.field("vector", pa.list_(pa.float32(), 384)),
+                    pa.field("vector", pa.list_(pa.float32(), dim)),
                     pa.field("mtime", pa.float64()),
                     pa.field("extension", pa.utf8()),
                     pa.field("type", pa.utf8()), # 'text' or 'image'
@@ -322,16 +331,34 @@ class EmbeddingPipeline:
         if not text or len(text.strip()) < 20:
             return
             
-        # Store full text in SQLite for fast keyword content search
-        db_path = Path.home() / ".local" / "share" / "filefinder" / "index.db"
+        # Feature 4.2: Incremental Embedding Hash Check
+        content_hash = hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()
+        
         try:
+            from db_utils import get_shard_path
+            db_path = get_shard_path(path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            
             conn = sqlite3.connect(db_path)
+            # Create hash table if missing
+            conn.execute("CREATE TABLE IF NOT EXISTS embedding_hashes (path TEXT PRIMARY KEY, hash TEXT)")
+            
+            # Check existing hash
+            cursor = conn.execute("SELECT hash FROM embedding_hashes WHERE path = ?", (path,))
+            row = cursor.fetchone()
+            if row and row[0] == content_hash:
+                # Content has not changed, skip embedding!
+                conn.close()
+                return
+                
+            # Content changed (or new file), save to FTS and update hash
             conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
             conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
+            conn.execute("INSERT OR REPLACE INTO embedding_hashes(path, hash) VALUES (?, ?)", (path, content_hash))
             conn.commit()
             conn.close()
         except Exception as e:
-            log.warning("Failed to save content to sqlite: %s", e)
+            log.warning("Failed to save content/hash to sqlite: %s", e)
             
         chunks = self.chunk_text(text)
         if not chunks:

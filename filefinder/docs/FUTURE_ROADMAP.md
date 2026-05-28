@@ -75,7 +75,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 1.4 🟡 Smarter Query Expansion
+### 1.4 🟢 Smarter Query Expansion [COMPLETED]
 
 **What:** Automatically expand queries with synonyms and related terms. "car" also searches for "vehicle", "automobile". "ML" also searches for "machine learning".
 
@@ -94,7 +94,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 1.5 🟢 Search History Analytics
+### 1.5 🟢 Search History Analytics [COMPLETED]
 
 **What:** Show users their search patterns: most searched queries, most accessed files, peak search times, and behavior trends.
 
@@ -270,7 +270,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ## Category 4: Performance & Scale
 
-### 4.1 🟡 Multi-Index Architecture
+### 4.1 🟡 Multi-Index Architecture [COMPLETED]
 
 **What:** Instead of one giant SQLite database, split into per-directory indexes. Search only the relevant subset.
 
@@ -284,7 +284,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 4.2 🟡 Incremental Embedding
+### 4.2 🟡 Incremental Embedding [COMPLETED]
 
 **What:** Track which files have been modified since last embedding and only re-embed those.
 
@@ -365,7 +365,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 5.4 🟢 Smart Folder Suggestions
+### 5.4 🟢 Smart Folder Suggestions [COMPLETED]
 
 **What:** "You have 200 PDF files scattered across 15 folders. Want me to suggest a better organization?"
 
@@ -379,7 +379,7 @@ This document lists every meaningful way FileChat could be improved in the futur
 
 ---
 
-### 5.5 🟢 Upgrade Embedding Model
+### 5.5 🟢 Upgrade Embedding Model [COMPLETED]
 
 **What:** Replace `all-MiniLM-L6-v2` (384-dim) with `all-mpnet-base-v2` (768-dim) or `bge-large-en-v1.5` (1024-dim) for better semantic accuracy.
 

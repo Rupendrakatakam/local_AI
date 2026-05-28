@@ -1,7 +1,8 @@
 """
-indexer.py — Watches ~/home in real-time and keeps a SQLite index updated.
+indexer.py — Watches ~/home in real-time and keeps multiple SQLite indexes updated.
 Batch 1: CPU throttle, debouncer, zero-byte filter, ignore file
 Batch 3: #16 Automatic SQLite VACUUM every 5,000 writes
+Phase 4: Multi-Index Architecture support
 """
 
 import os
@@ -11,17 +12,18 @@ import time
 import fnmatch
 import sqlite3
 import logging
+import hashlib
 import resource
 import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from config_loader import get as cfg
+from db_utils import get_shard_path, init_shard
 
 # ── Config ────────────────────────────────────────────────────────────────────
 watch_cfg = cfg("watch_path", "~")
 WATCH_PATH    = str(Path(watch_cfg).expanduser())
-DB_PATH       = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 LOG_PATH      = Path.home() / ".local" / "share" / "filefinder" / "indexer.log"
 IGNORE_FILE   = Path.home() / ".filefinder_ignore"
 DEBOUNCE_SEC  = float(cfg("debounce_sec", 0.5))
@@ -77,9 +79,16 @@ def is_ignored(path: str, patterns: list[str]) -> bool:
 # ── Write counter + VACUUM (#16) ─────────────────────────────────────────────
 _write_count = 0
 _write_lock  = threading.Lock()
+db_lock      = threading.Lock()
 
+_db_pool: dict[str, sqlite3.Connection] = {}
+_db_pool_lock = threading.Lock()
 
-def _maybe_vacuum(conn: sqlite3.Connection) -> None:
+def get_all_active_dbs() -> list[sqlite3.Connection]:
+    with _db_pool_lock:
+        return list(_db_pool.values())
+
+def _maybe_vacuum() -> None:
     """Increment write counter; VACUUM in background every VACUUM_EVERY writes."""
     global _write_count
     with _write_lock:
@@ -90,13 +99,12 @@ def _maybe_vacuum(conn: sqlite3.Connection) -> None:
 
 
 def _run_vacuum(count: int) -> None:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("VACUUM")
-        conn.close()
-        log.info("VACUUM complete after %d writes.", count)
-    except Exception as e:
-        log.warning("VACUUM failed: %s", e)
+    for conn in get_all_active_dbs():
+        try:
+            conn.execute("VACUUM")
+        except Exception as e:
+            log.warning("VACUUM failed on a shard: %s", e)
+    log.info("VACUUM complete after %d writes.", count)
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -107,117 +115,89 @@ def _generate_trigrams(name: str) -> list[str]:
     return list({s[i:i+3] for i in range(len(s)-2)})
 
 
-def get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(str(DB_PATH.parent), 0o700)
-    except OSError:
-        pass
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    try:
-        os.chmod(str(DB_PATH), 0o600)
-    except OSError:
-        pass
-    conn.execute("PRAGMA journal_mode=WAL")
+def get_db(path: str) -> sqlite3.Connection:
+    shard_path = get_shard_path(path)
+    key = str(shard_path)
+    
+    with _db_pool_lock:
+        if key in _db_pool:
+            return _db_pool[key]
+            
+        shard_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(shard_path.parent), 0o700)
+        except OSError:
+            pass
+        conn = sqlite3.connect(shard_path, check_same_thread=False)
+        try:
+            os.chmod(str(shard_path), 0o600)
+        except OSError:
+            pass
+            
+        init_shard(conn)
 
-    # Update 71: DB integrity check on startup
-    try:
-        result = conn.execute("PRAGMA integrity_check").fetchone()
-        if result[0] != "ok":
-            log.error("DATABASE CORRUPTION DETECTED: %s", result[0])
-            log.error("Run: python3 doctor.py --repair")
-        else:
-            log.info("DB integrity check passed.")
-    except Exception as e:
-        log.warning("Integrity check failed: %s", e)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS files (
-            path      TEXT PRIMARY KEY,
-            name      TEXT NOT NULL,
-            extension TEXT,
-            size      INTEGER,
-            mtime     REAL
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON files(name COLLATE NOCASE)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ext  ON files(extension)")
-    
-    # FTS5 Virtual Table for filename indexing
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-            name, path,
-            content='files', content_rowid='rowid',
-            tokenize='unicode61'
-        )
-    """)
-    
-    # FTS5 Virtual Table for full-text content indexing (Batch 5)
-    conn.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
-            path UNINDEXED, content,
-            tokenize='unicode61'
-        )
-    """)
-    
-    # FTS5 Triggers
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-            INSERT INTO files_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
-        END
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-            INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.rowid, old.name, old.path);
-        END
-    """)
-    conn.execute("""
-        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
-            INSERT INTO files_fts(files_fts, rowid, name, path) VALUES('delete', old.rowid, old.name, old.path);
-            INSERT INTO files_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
-        END
-    """)
-    
-    # Trigram table + index for typo-tolerant fallback
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS name_trigrams (
-            trigram TEXT NOT NULL,
-            file_id INTEGER NOT NULL,
-            FOREIGN KEY(file_id) REFERENCES files(rowid)
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_trigram ON name_trigrams(trigram)")
-    
-    # Check if FTS5 is populated when there are files
-    try:
-        cursor = conn.execute("SELECT count(*) FROM files_fts")
-        fts_count = cursor.fetchone()[0]
-        if fts_count == 0:
-            cursor = conn.execute("SELECT count(*) FROM files")
-            files_count = cursor.fetchone()[0]
-            if files_count > 0:
-                log.info("Rebuilding FTS5 virtual table for %d files...", files_count)
-                conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
-                
-                # Also populate trigrams if empty
-                cursor = conn.execute("SELECT count(*) FROM name_trigrams")
-                trig_count = cursor.fetchone()[0]
-                if trig_count == 0:
-                    log.info("Populating name trigrams table...")
-                    rows = conn.execute("SELECT rowid, name FROM files").fetchall()
-                    trigram_inserts = []
-                    for r_id, name in rows:
-                        for tg in _generate_trigrams(name):
-                            trigram_inserts.append((tg, r_id))
-                    if trigram_inserts:
-                        conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", trigram_inserts)
-    except sqlite3.OperationalError as e:
-        log.warning("FTS5/Trigram population check failed: %s", e)
+        # Update 71: DB integrity check on startup
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+            if result[0] != "ok":
+                log.error("DATABASE CORRUPTION DETECTED in %s: %s", shard_path.name, result[0])
+            else:
+                log.info("DB integrity check passed for %s.", shard_path.name)
+        except Exception as e:
+            log.warning("Integrity check failed for %s: %s", shard_path.name, e)
         
-    conn.commit()
-    return conn
+        # Check if FTS5 is populated when there are files
+        try:
+            cursor = conn.execute("SELECT count(*) FROM files_fts")
+            fts_count = cursor.fetchone()[0]
+            if fts_count == 0:
+                cursor = conn.execute("SELECT count(*) FROM files")
+                files_count = cursor.fetchone()[0]
+                if files_count > 0:
+                    log.info("Rebuilding FTS5 virtual table for %d files in %s...", files_count, shard_path.name)
+                    conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
+                    
+                    # Also populate trigrams if empty
+                    cursor = conn.execute("SELECT count(*) FROM name_trigrams")
+                    trig_count = cursor.fetchone()[0]
+                    if trig_count == 0:
+                        log.info("Populating name trigrams table for %s...", shard_path.name)
+                        rows = conn.execute("SELECT rowid, name FROM files").fetchall()
+                        trigram_inserts = []
+                        for r_id, name in rows:
+                            for tg in _generate_trigrams(name):
+                                trigram_inserts.append((tg, r_id))
+                        if trigram_inserts:
+                            conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", trigram_inserts)
+        except sqlite3.OperationalError as e:
+            log.warning("FTS5/Trigram population check failed for %s: %s", shard_path.name, e)
+            
+        conn.commit()
+        _db_pool[key] = conn
+        return conn
 
 
-def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], commit: bool = True) -> None:
+def _compute_file_hash(path: Path, size: int) -> str:
+    """Feature 5.3: Fast hashing for duplicates. Full MD5 if <50MB, else partial hash."""
+    hasher = hashlib.md5()
+    try:
+        with open(path, "rb") as f:
+            if size <= 50 * 1024 * 1024:
+                # Full hash for small files
+                for chunk in iter(lambda: f.read(4096 * 1024), b""):
+                    hasher.update(chunk)
+            else:
+                # Fast partial hash for large files
+                hasher.update(f.read(1024 * 1024))
+                f.seek(-1024 * 1024, 2)
+                hasher.update(f.read(1024 * 1024))
+                hasher.update(str(size).encode('utf-8'))
+    except OSError:
+        pass
+    return hasher.hexdigest()
+
+
+def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
     try:
         p = Path(path)
         if not p.is_file():
@@ -230,28 +210,41 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], comm
             return
         if is_ignored(str(p), ignore_patterns):
             return
-        
-        # Check if row exists to check if modified
-        cursor = conn.execute("SELECT rowid, size, mtime FROM files WHERE path = ?", (str(p),))
-        row = cursor.fetchone()
-        if row:
-            if row[1] == st.st_size and abs(row[2] - st.st_mtime) < 0.001:
-                return
-            conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
             
-        cursor = conn.execute(
-            "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
-            (str(p), p.name, p.suffix.lower().lstrip("."), st.st_size, st.st_mtime),
-        )
-        rowid = cursor.lastrowid
+        conn = get_db(path)
         
-        # Populate trigrams
-        trigrams = _generate_trigrams(p.name)
-        if trigrams:
-            conn.executemany(
-                "INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)",
-                [(tg, rowid) for tg in trigrams]
+        # Feature 5.3: Compute hash outside the db lock
+        file_hash = _compute_file_hash(p, st.st_size)
+        
+        with db_lock:
+            # Check if row exists to check if modified
+            cursor = conn.execute("SELECT rowid, size, mtime FROM files WHERE path = ?", (str(p),))
+            row = cursor.fetchone()
+            if row:
+                if row[1] == st.st_size and abs(row[2] - st.st_mtime) < 0.001:
+                    return
+                conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
+                
+            cursor = conn.execute(
+                "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
+                (str(p), p.name, p.suffix.lower().lstrip("."), st.st_size, st.st_mtime),
             )
+            rowid = cursor.lastrowid
+            
+            # Populate trigrams
+            trigrams = _generate_trigrams(p.name)
+            if trigrams:
+                conn.executemany(
+                    "INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)",
+                    [(tg, rowid) for tg in trigrams]
+                )
+                
+            # Store duplicate hash
+            conn.execute("INSERT OR REPLACE INTO file_hashes (path, hash, size) VALUES (?, ?, ?)", 
+                         (str(p), file_hash, st.st_size))
+                
+            if commit:
+                conn.commit()
             
         # Semantic embedding integration (Phase 2)
         try:
@@ -264,21 +257,22 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], comm
             pass
             
         if commit:
-            conn.commit()
-            _maybe_vacuum(conn)   # #16
+            _maybe_vacuum()   # #16
     except (PermissionError, OSError):
         pass
 
 
-def delete(conn: sqlite3.Connection, path: str) -> None:
-    cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
-    row = cursor.fetchone()
-    if row:
-        conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
-    conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
-    conn.execute("DELETE FROM files WHERE path = ?", (path,))
-    conn.commit()
-    _maybe_vacuum(conn)   # #16
+def delete(path: str) -> None:
+    conn = get_db(path)
+    with db_lock:
+        cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
+        row = cursor.fetchone()
+        if row:
+            conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
+        conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
+        conn.execute("DELETE FROM files WHERE path = ?", (path,))
+        conn.commit()
+    _maybe_vacuum()   # #16
 
 
 # ── CPU throttle ──────────────────────────────────────────────────────────────
@@ -291,7 +285,7 @@ def throttle_if_busy() -> None:
 
 
 # ── Full scan ─────────────────────────────────────────────────────────────────
-def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
+def full_scan(ignore_patterns: list[str]) -> None:
     log.info("Starting full scan of %s …", WATCH_PATH)
     progress_file = Path("/tmp/filefinder.booting")
     count = 0
@@ -306,24 +300,27 @@ def full_scan(conn: sqlite3.Connection, ignore_patterns: list[str]) -> None:
             if fname.startswith("."):
                 continue
             full_path = os.path.join(root, fname)
-            upsert(conn, full_path, ignore_patterns, commit=False)
+            upsert(full_path, ignore_patterns, commit=False)
             count += 1
             if count % 500 == 0:
-                conn.commit()
+                with db_lock:
+                    for conn in get_all_active_dbs():
+                        conn.commit()
                 throttle_if_busy()
                 progress_file.write_text(str(count))
             # Update 78: memory cap check every 1000 files
             if count % 1000 == 0:
                 _check_memory()
-    conn.commit()  # Final commit
+    with db_lock:
+        for conn in get_all_active_dbs():
+            conn.commit()  # Final commit
     progress_file.unlink(missing_ok=True)
     log.info("Full scan complete — %d files indexed.", count)
 
 
 # ── Debouncer ─────────────────────────────────────────────────────────────────
 class Debouncer:
-    def __init__(self, conn: sqlite3.Connection, ignore_patterns: list[str]):
-        self.conn = conn
+    def __init__(self, ignore_patterns: list[str]):
         self.ignore_patterns = ignore_patterns
         self._pending: dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
@@ -341,12 +338,12 @@ class Debouncer:
             if path in self._pending:
                 self._pending[path].cancel()
                 del self._pending[path]
-        delete(self.conn, path)
+        delete(path)
 
     def _do_upsert(self, path: str) -> None:
         with self._lock:
             self._pending.pop(path, None)
-        upsert(self.conn, path, self.ignore_patterns)
+        upsert(path, self.ignore_patterns)
 
     # Update 72: Flush all pending timers on shutdown
     def flush_all(self):
@@ -355,7 +352,7 @@ class Debouncer:
             for path, timer in self._pending.items():
                 timer.cancel()
                 try:
-                    upsert(self.conn, path, self.ignore_patterns)
+                    upsert(path, self.ignore_patterns)
                 except Exception:
                     pass
             self._pending.clear()
@@ -376,12 +373,17 @@ def _check_memory():
 
 
 # ── WAL Checkpoint (Update 68) ────────────────────────────────────────────────
-def _wal_checkpoint_loop(conn):
+def _wal_checkpoint_loop():
     """Periodic WAL checkpoint to prevent unbounded WAL growth."""
     while True:
         time.sleep(300)  # every 5 minutes
         try:
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            with db_lock:
+                for conn in get_all_active_dbs():
+                    try:
+                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    except Exception:
+                        pass
             log.debug("WAL checkpoint complete.")
         except Exception:
             pass
@@ -413,10 +415,9 @@ class Handler(FileSystemEventHandler):
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     ignore_patterns = load_ignore_patterns()
-    conn = get_db()
-    full_scan(conn, ignore_patterns)
+    full_scan(ignore_patterns)
 
-    debouncer = Debouncer(conn, ignore_patterns)
+    debouncer = Debouncer(ignore_patterns)
     try:
         observer  = Observer()
         observer.schedule(Handler(debouncer), WATCH_PATH, recursive=True)
@@ -442,7 +443,7 @@ if __name__ == "__main__":
             raise
 
     # Update 68: Start WAL checkpoint thread
-    threading.Thread(target=_wal_checkpoint_loop, args=(conn,), daemon=True).start()
+    threading.Thread(target=_wal_checkpoint_loop, daemon=True).start()
 
     try:
         while True:
@@ -455,5 +456,6 @@ if __name__ == "__main__":
         debouncer.flush_all()
         observer.stop()
         observer.join()
-        conn.close()
+        for conn in get_all_active_dbs():
+            conn.close()
         log.info("Indexer stopped.")

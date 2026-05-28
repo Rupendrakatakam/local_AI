@@ -135,6 +135,45 @@ def api_preview():
             
     return jsonify({"type": "unknown", "content": f"No preview available for {ext} files."})
 
+@app.route("/api/analytics")
+def api_analytics():
+    """Returns search history analytics from behavior.db."""
+    try:
+        from behavior import get_behavior_db
+        conn = get_behavior_db()
+        
+        # Top 5 queries
+        cur = conn.execute("SELECT query, count(*) as c FROM searches GROUP BY query ORDER BY c DESC LIMIT 5")
+        top_queries = [{"query": row[0], "count": row[1]} for row in cur.fetchall() if row[0]]
+        
+        # Top 5 opened files
+        cur = conn.execute("SELECT path, count(*) as c FROM opens GROUP BY path ORDER BY c DESC LIMIT 5")
+        top_files = [{"path": row[0], "count": row[1]} for row in cur.fetchall() if row[0]]
+        
+        # Hourly access distribution (local time)
+        cur = conn.execute("SELECT strftime('%H', datetime(timestamp, 'unixepoch', 'localtime')), count(*) FROM opens GROUP BY 1")
+        hourly = {f"{i:02d}": 0 for i in range(24)}
+        for row in cur.fetchall():
+            if row[0]:
+                hourly[row[0]] = row[1]
+                
+        cur = conn.execute("SELECT strftime('%H', datetime(timestamp, 'unixepoch', 'localtime')), count(*) FROM searches GROUP BY 1")
+        for row in cur.fetchall():
+            if row[0]:
+                hourly[row[0]] += row[1]
+                
+        conn.close()
+        
+        return jsonify({
+            "top_queries": top_queries,
+            "top_files": top_files,
+            "hourly": [hourly[f"{i:02d}"] for i in range(24)]
+        })
+    except ImportError:
+        return jsonify({"error": "behavior module not found"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/stats")
 def api_stats():
     """Returns overall health, database, and behavior stats for the dashboard."""
@@ -156,6 +195,99 @@ def api_stats():
         result["health"] = None
         
     return jsonify(result)
+
+@app.route("/api/smart_folders")
+def api_smart_folders():
+    try:
+        from config_loader import get as cfg
+        import sqlite3
+        import requests
+        import json
+        from collections import defaultdict
+        from pathlib import Path
+        from db_utils import get_all_shard_paths
+        
+        shards = get_all_shard_paths()
+        if not shards:
+            return jsonify({"error": "No database found"}), 404
+            
+        folders = defaultdict(lambda: {"count": 0, "size": 0, "exts": defaultdict(int)})
+        
+        for db_path in shards:
+            try:
+                conn = sqlite3.connect(db_path)
+                cur = conn.execute("SELECT path, size, extension FROM files WHERE size > 0")
+                for row in cur:
+                    path, size, ext = row
+                    parent = str(Path(path).parent)
+                    folders[parent]["count"] += 1
+                    folders[parent]["size"] += size
+                    if ext:
+                        folders[parent]["exts"][ext] += 1
+                conn.close()
+            except Exception:
+                pass
+        
+        # Filter and sort folders by count
+        valid_folders = {k: v for k, v in folders.items() if v["count"] > 5}
+        top_folders = sorted(valid_folders.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
+        
+        if not top_folders:
+            return jsonify({"suggestion": "Your folders seem quite organized or don't have enough files to cluster yet!"})
+            
+        prompt = "I have the following folders with files scattered in them. Suggest a better organization strategy or folder structure to clean this up. Keep it concise, actionable, and format with markdown.\n\n"
+        for folder, stats in top_folders:
+            ext_summary = ", ".join(f"{count} {ext}" for ext, count in sorted(stats["exts"].items(), key=lambda x: x[1], reverse=True)[:3])
+            prompt += f"Folder '{folder}': {stats['count']} files ({stats['size'] // (1024*1024)} MB). Main types: {ext_summary}\n"
+            
+        OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
+        MODEL = cfg("ollama_model", "phi3:mini")
+        
+        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=45)
+        resp.raise_for_status()
+        
+        suggestion = resp.json().get("response", "").strip()
+        import markdown
+        html_suggestion = markdown.markdown(suggestion)
+        return jsonify({"suggestion": html_suggestion})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/duplicates")
+def api_duplicates():
+    try:
+        from db_utils import get_all_shard_paths
+        import sqlite3
+        from collections import defaultdict
+        
+        shards = get_all_shard_paths()
+        hash_groups = defaultdict(list)
+        
+        for db_path in shards:
+            try:
+                conn = sqlite3.connect(db_path)
+                cur = conn.execute("SELECT path, hash, size FROM file_hashes")
+                for row in cur:
+                    path, fhash, size = row
+                    hash_groups[fhash].append({"path": path, "size": size})
+                conn.close()
+            except Exception:
+                pass
+                
+        duplicates = []
+        for fhash, files in hash_groups.items():
+            if len(files) > 1:
+                duplicates.append({
+                    "hash": fhash,
+                    "count": len(files),
+                    "wasted_size": files[0]["size"] * (len(files) - 1),
+                    "files": files
+                })
+                
+        duplicates.sort(key=lambda x: x["wasted_size"], reverse=True)
+        return jsonify({"duplicates": duplicates[:50]}) # Top 50 dupes
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(cfg("gui_port", 5000)), debug=True)
