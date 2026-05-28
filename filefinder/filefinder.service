@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 %h/Rupendra/local_AI/filefinder/indexer.py
+Environment=HF_HUB_DISABLE_TELEMETRY=1
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

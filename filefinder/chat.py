@@ -24,6 +24,7 @@ from rich import box
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.completion import Completer, Completion
 
 console      = Console()
 HISTORY_FILE = Path.home() / ".config" / "filefinder" / "history"
@@ -96,6 +97,21 @@ PROMPT_STYLE = Style.from_dict({
 })
 
 
+# ── Suggestion completer ──────────────────────────────────────────────────────
+class SuggestionCompleter(Completer):
+    """Autocomplete from search history stored in behavior.db."""
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor.strip()
+        if len(text) < 2:
+            return
+        try:
+            from suggestions import get_suggestions
+            for s in get_suggestions(text, limit=5):
+                yield Completion(s, start_position=-len(text))
+        except Exception:
+            pass
+
+
 # ── Regex search (#20) ────────────────────────────────────────────────────────
 def _regex_search(pattern: str, limit: int = 50) -> list[FileResult]:
     """
@@ -165,6 +181,27 @@ def _show_boot_progress() -> None:
         progress.update(task, count=get_live_count())
 
     console.print(f"[green]  ✓ Index ready — {get_live_count()} files[/green]\n")
+
+
+def _show_embedding_progress() -> None:
+    """
+    If embeddings are being processed, show a one-time progress snapshot.
+    """
+    try:
+        from embedder import get_pipeline
+        pipeline = get_pipeline()
+        progress = pipeline.get_progress()
+        if progress["total"] > 0 and progress["pct"] < 100:
+            console.print(
+                f"[dim]  ⚡ Embeddings: {progress['done']:,}/{progress['total']:,} "
+                f"({progress['pct']}%) — {progress['queued']} queued, {progress['errors']} errors[/dim]"
+            )
+        elif progress["total"] > 0:
+            console.print(f"[dim]  ⚡ Embeddings: {progress['done']:,} files embedded ✓[/dim]")
+    except ImportError:
+        pass
+    except Exception:
+        pass
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -380,6 +417,9 @@ def main() -> None:
     # (#22) Show live boot progress if scan is running
     _show_boot_progress()
 
+    # Show embedding progress snapshot
+    _show_embedding_progress()
+
     s = db_stats()
     if s["ready"]:
         console.print(f"[dim]  Index ready — {s['total']:,} files[/dim]\n")
@@ -387,7 +427,10 @@ def main() -> None:
         console.print("[yellow]  ⚠ Index not found. Is the indexer running?[/yellow]\n")
 
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    session = PromptSession(history=FileHistory(str(HISTORY_FILE)))
+    session = PromptSession(
+        history=FileHistory(str(HISTORY_FILE)),
+        completer=SuggestionCompleter(),
+    )
 
     while True:
         try:
@@ -494,6 +537,13 @@ def main() -> None:
         _last_query = query
         with console.status("[cyan]Searching…[/cyan]", spinner="dots"):
             results, is_fuzzy = search(query)
+
+        # Record search in behavior DB for suggestions and analytics
+        try:
+            from behavior import record_search
+            record_search(query, len(results))
+        except ImportError:
+            pass
 
         display_results(results, session, is_fuzzy)
 

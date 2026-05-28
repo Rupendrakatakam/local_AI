@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 from queue import PriorityQueue
 from typing import Optional, List, Dict
+from config_loader import get as cfg
 
 LANCEDB_PATH = Path.home() / ".local" / "share" / "filefinder" / "vectors"
 
@@ -22,15 +23,15 @@ EMBEDDABLE_EXTS = {
 }
 PRIORITY_EXTS = {'.pdf', '.docx', '.doc', '.txt', '.md'}
 
-CHUNK_SIZE = 400
-CHUNK_OVERLAP = 80
-BATCH_SIZE = 32
+CHUNK_SIZE = int(cfg("chunk_size", 400))
+CHUNK_OVERLAP = int(cfg("chunk_overlap", 80))
+BATCH_SIZE = int(cfg("batch_size", 32))
 
 # ==============================================================================
 # Model Configuration (Modular for easy future upgrades)
 # ==============================================================================
-TEXT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-IMAGE_EMBEDDING_MODEL = "openai/clip-vit-base-patch32"
+TEXT_EMBEDDING_MODEL = cfg("embedding_model", "all-MiniLM-L6-v2")
+IMAGE_EMBEDDING_MODEL = cfg("image_model", "openai/clip-vit-base-patch32")
 # ==============================================================================
 
 log = logging.getLogger("embedder")

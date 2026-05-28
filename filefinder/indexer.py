@@ -16,18 +16,19 @@ import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from config_loader import get as cfg
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WATCH_PATH    = str(Path.home())
 DB_PATH       = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 LOG_PATH      = Path.home() / ".local" / "share" / "filefinder" / "indexer.log"
 IGNORE_FILE   = Path.home() / ".filefinder_ignore"
-DEBOUNCE_SEC  = 0.5
+DEBOUNCE_SEC  = float(cfg("debounce_sec", 0.5))
 THROTTLE_SEC  = 0.03
-CPU_LOAD_CAP  = 2.0
-VACUUM_EVERY  = 5_000    # #16: run VACUUM after this many write operations
-MAX_FILE_SIZE = 500 * 1024 * 1024  # Update 75: skip files > 500MB
-MEMORY_CAP_MB = 512               # Update 78: pause indexing if RSS exceeds this
+CPU_LOAD_CAP  = float(cfg("cpu_load_cap", 2.0))
+VACUUM_EVERY  = int(cfg("vacuum_every", 5000))
+MAX_FILE_SIZE = int(cfg("max_file_size_mb", 500)) * 1024 * 1024
+MEMORY_CAP_MB = int(cfg("memory_cap_mb", 512))
 
 SKIP_DIRS = {
     ".git", ".cache", ".npm", ".cargo", "node_modules",
@@ -145,7 +146,7 @@ def get_db() -> sqlite3.Connection:
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name, path,
             content='files', content_rowid='rowid',
-            tokenize='unicode61 separators "_-."'
+            tokenize='unicode61'
         )
     """)
     
@@ -221,10 +222,12 @@ def upsert(conn: sqlite3.Connection, path: str, ignore_patterns: list[str], comm
         if is_ignored(str(p), ignore_patterns):
             return
         
-        # Check if row exists to delete old trigrams
-        cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (str(p),))
+        # Check if row exists to check if modified
+        cursor = conn.execute("SELECT rowid, size, mtime FROM files WHERE path = ?", (str(p),))
         row = cursor.fetchone()
         if row:
+            if row[1] == st.st_size and abs(row[2] - st.st_mtime) < 0.001:
+                return
             conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
             
         cursor = conn.execute(
@@ -404,10 +407,29 @@ if __name__ == "__main__":
     full_scan(conn, ignore_patterns)
 
     debouncer = Debouncer(conn, ignore_patterns)
-    observer  = Observer()
-    observer.schedule(Handler(debouncer), WATCH_PATH, recursive=True)
-    observer.start()
-    log.info("Watching %s for changes.", WATCH_PATH)
+    try:
+        observer  = Observer()
+        observer.schedule(Handler(debouncer), WATCH_PATH, recursive=True)
+        observer.start()
+        log.info("Watching %s for changes (using inotify).", WATCH_PATH)
+    except OSError as e:
+        if e.errno == 28:  # inotify watch limit reached
+            current_watches = "unknown"
+            try:
+                with open("/proc/sys/fs/inotify/max_user_watches") as f:
+                    current_watches = f.read().strip()
+            except Exception:
+                pass
+            log.warning("WARNING: inotify watch limit reached (currently %s).", current_watches)
+            log.warning("To fix this permanently, run: echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p")
+            log.warning("Falling back to PollingObserver (will consume slightly more CPU/IO)...")
+            from watchdog.observers.polling import PollingObserver
+            observer = PollingObserver()
+            observer.schedule(Handler(debouncer), WATCH_PATH, recursive=True)
+            observer.start()
+            log.info("Watching %s for changes (using polling fallback).", WATCH_PATH)
+        else:
+            raise
 
     # Update 68: Start WAL checkpoint thread
     threading.Thread(target=_wal_checkpoint_loop, args=(conn,), daemon=True).start()

@@ -7,8 +7,9 @@
     "image_model": "openai/clip-vit-base-patch32",
     "chunk_size": 400,
     "chunk_overlap": 80,
+    "batch_size": 32,
     "max_file_size_mb": 500,
-    "memory_cap_mb": 512,
+    "memory_cap_mb": 2048,
     "cache_ttl_seconds": 30,
     "gui_port": 5000,
     "vacuum_every": 5000,
@@ -17,5 +18,7 @@
     "cpu_load_cap": 2.0,
     "ollama_rate_limit_ms": 100,
     "ollama_max_concurrent": 3,
-    "lru_cache_maxsize": 256
+    "lru_cache_maxsize": 256,
+    "trigram_threshold": 0.45,
+    "fuzzy_score_cutoff": 65
 }

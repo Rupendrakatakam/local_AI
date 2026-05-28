@@ -15,11 +15,12 @@ from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+from config_loader import get as cfg
 
 DB_PATH    = Path.home() / ".local" / "share" / "filefinder" / "index.db"
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL      = "phi3:mini"
-CACHE_TTL  = 30.0  # Update 70: query cache TTL in seconds
+OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
+MODEL      = cfg("ollama_model", "phi3:mini")
+CACHE_TTL  = float(cfg("cache_ttl_seconds", 30))
 
 # Update 69: Thread-local connection pool
 _local = threading.local()
@@ -51,9 +52,9 @@ def _cache_set(key: str, results, fuzzy):
     _query_cache[key] = (time.time(), results, fuzzy)
 
 # Update 74: Ollama rate limiter
-_ollama_semaphore = threading.Semaphore(3)
+_ollama_semaphore = threading.Semaphore(cfg("ollama_max_concurrent", 3))
 _ollama_last_call = 0.0
-_OLLAMA_MIN_INTERVAL = 0.1
+_OLLAMA_MIN_INTERVAL = cfg("ollama_rate_limit_ms", 100) / 1000.0
 
 # ── Category map (#18) ────────────────────────────────────────────────────────
 CATEGORY_MAP: dict[str, list[str]] = {
@@ -318,7 +319,7 @@ def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
         JOIN files ON files.rowid = name_trigrams.file_id
         WHERE name_trigrams.trigram IN ({placeholders}) AND files.size > 0 {hidden_clause}
         GROUP BY name_trigrams.file_id
-        HAVING similarity >= 0.35
+        HAVING similarity >= {cfg('trigram_threshold', 0.45)}
         ORDER BY similarity DESC, files.mtime DESC
         LIMIT ?
     """
@@ -326,7 +327,8 @@ def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
     try:
         params = [len(q_trigrams)] + q_trigrams + [limit]
         rows = conn.execute(query_str, params).fetchall()
-        results = [FileResult(**dict(r)) for r in rows]
+        results = [FileResult(path=r["path"], name=r["name"], extension=r["extension"],
+                              size=r["size"], mtime=r["mtime"]) for r in rows]
     except sqlite3.OperationalError:
         results = []
     finally:
@@ -384,7 +386,7 @@ def _fuzzy_search(query: str, limit: int = 15) -> list[FileResult]:
         q_norm, norm_names,
         scorer=fuzz.WRatio,
         limit=limit,
-        score_cutoff=65,
+        score_cutoff=cfg("fuzzy_score_cutoff", 65),
     )
 
     if not matches:
@@ -496,7 +498,7 @@ Examples:
   "find image named rupendra" → {"keywords": ["rupendra"], "extension": null, "directory": null}"""
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=cfg("lru_cache_maxsize", 256))
 def _parse_intent(query: str) -> dict:
     global _ollama_last_call
     try:
@@ -752,10 +754,6 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     return [], False
 
 
-def _search_with_cache(query, results, is_fuzzy):
-    """Helper to cache and return results."""
-    _cache_set(query.strip(), results, is_fuzzy)
-    return results, is_fuzzy
 
 
 def db_stats() -> dict:
