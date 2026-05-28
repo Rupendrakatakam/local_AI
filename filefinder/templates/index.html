@@ -445,6 +445,7 @@
         <h1>FileChat</h1>
         <div class="controls">
             <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">📁 Smart Folders</button>
+            <button class="icon-btn" id="btn-chat" onclick="openChat()">💬 Chat Assistant</button>
             <button class="icon-btn" id="btn-duplicates" onclick="fetchDuplicates()">🔍 Find Duplicates</button>
             <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
             <select class="icon-btn" id="themeSelect" onchange="setTheme(this.value)">
@@ -523,6 +524,28 @@
                     <p style="margin-top: 15px; color: #94a3b8;">Scanning for duplicates...</p>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Chat Modal -->
+    <div class="modal-overlay" id="chatModal" onclick="if(event.target===this) closeChat()">
+        <div class="modal-content" style="max-width: 600px; height: 80vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
+                <h2 style="margin: 0; font-size: 1.25rem;">💬 FileChat Assistant</h2>
+                <button class="icon-btn" onclick="closeChat()" style="border:none;">✕</button>
+            </div>
+            
+            <div id="chatHistory" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; padding-right: 10px; margin-bottom: 15px;">
+                <!-- Chat messages go here -->
+                <div style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
+                    Hello! I'm your local FileChat assistant. I can see what files you've opened and searched for recently. How can I help?
+                </div>
+            </div>
+            
+            <form id="chatForm" onsubmit="submitChat(event)" style="display: flex; gap: 10px; border-top: 1px solid var(--border); padding-top: 15px;">
+                <input type="text" id="chatInput" placeholder="Ask about your recent files..." autocomplete="off" style="flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-main); outline: none;">
+                <button type="submit" style="background: var(--accent-cyan); color: #000; border: none; padding: 0 20px; border-radius: 20px; font-weight: 600; cursor: pointer;">Send</button>
+            </form>
         </div>
     </div>
 
@@ -822,6 +845,77 @@
             } catch (e) {
                 content.innerHTML = `<div style="color: #ef4444; padding: 20px;">Error: ${escapeHtml(e.message)}</div>`;
             }
+        }
+
+        function openChat() {
+            document.getElementById('chatModal').style.display = 'flex';
+            document.getElementById('chatInput').focus();
+        }
+
+        function closeChat() {
+            document.getElementById('chatModal').style.display = 'none';
+        }
+
+        async function submitChat(e) {
+            e.preventDefault();
+            const input = document.getElementById('chatInput');
+            const history = document.getElementById('chatHistory');
+            const msg = input.value.trim();
+            if (!msg) return;
+
+            // Append user message
+            history.innerHTML += `
+                <div style="align-self: flex-end; background: var(--accent-cyan); color: #000; padding: 12px 16px; border-radius: 12px; border-bottom-right-radius: 4px; max-width: 85%; line-height: 1.5; font-weight: 500;">
+                    ${escapeHtml(msg)}
+                </div>
+            `;
+            input.value = '';
+            
+            // Add loading indicator
+            const loadingId = 'loading-' + Date.now();
+            history.innerHTML += `
+                <div id="${loadingId}" style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; color: var(--text-muted);">
+                    Thinking...
+                </div>
+            `;
+            history.scrollTop = history.scrollHeight;
+
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+                const data = await res.json();
+                
+                document.getElementById(loadingId).remove();
+                
+                if (data.error) throw new Error(data.error);
+
+                // Parse backticks into clickable open links
+                let htmlReply = data.reply;
+                // Markdown might convert backticks to <code> elements, so we look for <code>/absolute/path</code>
+                htmlReply = htmlReply.replace(/<code>(.*?)<\/code>/g, (match, path) => {
+                    if (path.includes('/') || path.includes('\\\\')) {
+                        return `<a href="javascript:void(0)" onclick="openFile('${path.replace(/'/g, "\\'")}')" style="color: var(--accent-cyan); text-decoration: underline;">${escapeHtml(path)}</a>`;
+                    }
+                    return match;
+                });
+
+                history.innerHTML += `
+                    <div style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
+                        ${htmlReply}
+                    </div>
+                `;
+            } catch (err) {
+                if (document.getElementById(loadingId)) document.getElementById(loadingId).remove();
+                history.innerHTML += `
+                    <div style="align-self: flex-start; background: rgba(239, 68, 68, 0.1); color: #ef4444; padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
+                        Error: ${escapeHtml(err.message)}
+                    </div>
+                `;
+            }
+            history.scrollTop = history.scrollHeight;
         }
 
         function closeAnalytics() {

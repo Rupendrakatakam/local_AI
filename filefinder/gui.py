@@ -289,5 +289,71 @@ def api_duplicates():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    try:
+        from behavior import get_behavior_db
+        import requests
+        import datetime
+        
+        user_message = request.json.get("message", "").strip()
+        if not user_message:
+            return jsonify({"error": "Empty message"}), 400
+            
+        # Get recent context
+        conn = get_behavior_db()
+        
+        # Recent opens
+        cur = conn.execute("SELECT path, timestamp FROM opens ORDER BY timestamp DESC LIMIT 10")
+        recent_opens = []
+        for p, ts in cur.fetchall():
+            dt = datetime.datetime.fromtimestamp(ts).strftime("%A %I:%M %p")
+            recent_opens.append(f"- Opened '{p}' at {dt}")
+            
+        # Recent searches
+        cur = conn.execute("SELECT query, timestamp FROM searches ORDER BY timestamp DESC LIMIT 5")
+        recent_searches = []
+        for q, ts in cur.fetchall():
+            dt = datetime.datetime.fromtimestamp(ts).strftime("%A %I:%M %p")
+            recent_searches.append(f"- Searched '{q}' at {dt}")
+            
+        conn.close()
+        
+        context_lines = []
+        if recent_opens:
+            context_lines.append("Recent Files Opened:\n" + "\n".join(recent_opens))
+        if recent_searches:
+            context_lines.append("Recent Searches:\n" + "\n".join(recent_searches))
+            
+        context_str = "\n\n".join(context_lines) if context_lines else "No recent activity."
+        
+        prompt = f"""You are FileChat, a helpful personal file assistant running locally.
+You have access to the user's recent file activity context below.
+If the user asks about what they were doing, or what file they were working on, use the context to answer them.
+If you suggest a specific file path to the user, ALWAYS wrap the exact path in backticks (e.g. `/home/user/doc.txt` or `C:\\Users\\file.pdf`) so the frontend can turn it into a clickable link.
+Do not make up file paths that are not in the context. Keep your response conversational and concise.
+
+Context:
+{context_str}
+
+User Message: {user_message}"""
+
+        OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
+        MODEL = cfg("ollama_model", "phi3:mini")
+        
+        resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=45)
+        resp.raise_for_status()
+        
+        reply = resp.json().get("response", "").strip()
+        
+        import markdown
+        # Custom markdown extension or simple regex to convert backticks to actionable links is handled in JS
+        html_reply = markdown.markdown(reply)
+        
+        return jsonify({"reply": html_reply})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(cfg("gui_port", 5000)), debug=True)

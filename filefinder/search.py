@@ -16,7 +16,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 from config_loader import get as cfg
-from suggestions import get_suggestions, track_query
+from suggestions import get_suggestions
 from db_utils import get_all_shard_paths
 import concurrent.futures
 
