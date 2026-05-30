@@ -154,6 +154,10 @@ def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
 def _normalize_keywords(keywords: list[str]) -> list[str]:
     atoms = []
     for kw in keywords:
+        # If it looks like a filename (has a dot-extension), keep it intact
+        if '.' in kw and ' ' not in kw and len(kw) > 2:
+            atoms.append(kw.lower())
+            continue
         parts = re.split(r'[\s_\-\.]+', kw)
         expanded = []
         for p in parts:
@@ -739,7 +743,7 @@ def _resolve_directory(hint: Optional[str]) -> Optional[str]:
 
 
 # ── Semantic Search & Fusion (Phase 2) ───────────────────────────────────────
-def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
+def _semantic_search(query: str, extensions: Optional[list[str]] = None, limit: int = 15) -> list[FileResult]:
     """Search by meaning using vector similarity in LanceDB (Text + Image)."""
     try:
         from embedder import get_pipeline
@@ -754,7 +758,9 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
         if model is not None and table is not None:
             try:
                 q_vec = model.encode([query], normalize_embeddings=True, show_progress_bar=False).tolist()[0]
-                results = table.search(q_vec).limit(limit * 3).to_pandas()
+                # Pull more results if filtering by extension to ensure we have enough after SQLite rehydration
+                fetch_limit = limit * (10 if extensions else 3)
+                results = table.search(q_vec).limit(fetch_limit).to_pandas()
                 for _, row in results.iterrows():
                     p = row["path"]
                     if p not in seen:
@@ -774,7 +780,8 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
                     import numpy as np
                     img_q_vec = img_q_vec / np.linalg.norm(img_q_vec)
                     
-                    img_results = image_table.search(img_q_vec.tolist()).limit(limit * 3).to_pandas()
+                    fetch_limit = limit * (10 if extensions else 3)
+                    img_results = image_table.search(img_q_vec.tolist()).limit(fetch_limit).to_pandas()
                     for _, row in img_results.iterrows():
                         p = row["path"]
                         if p not in seen:
@@ -790,12 +797,19 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
             try:
                 conn = sqlite3.connect(shard_path)
                 conn.row_factory = sqlite3.Row
-                for p in file_results[:limit*2]:
+                for p in file_results[:limit*3]:
                     if p in seen_paths:
                         continue
-                    r = conn.execute(
-                        "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
-                    ).fetchone()
+                    if extensions:
+                        placeholders = ",".join("?" * len(extensions))
+                        ext_params = [e.lower() for e in extensions]
+                        r = conn.execute(
+                            f"SELECT path, name, extension, size, mtime FROM files WHERE path=? AND extension IN ({placeholders})", (p, *ext_params)
+                        ).fetchone()
+                    else:
+                        r = conn.execute(
+                            "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
+                        ).fetchone()
                     if r:
                         final_results.append(FileResult(**dict(r)))
                         seen_paths.add(p)
@@ -809,7 +823,7 @@ def _semantic_search(query: str, limit: int = 15) -> list[FileResult]:
         return []
 
 
-def _rrf_fusion(*result_lists: list[FileResult], k: int = 60) -> list[FileResult]:
+def _rrf_fusion(query_atoms: list[str], *result_lists: list[FileResult], k: int = 60) -> list[FileResult]:
     """Merge any number of result lists using Reciprocal Rank Fusion."""
     scores: dict[str, float] = {}
     path_to_result: dict[str, FileResult] = {}
@@ -820,15 +834,35 @@ def _rrf_fusion(*result_lists: list[FileResult], k: int = 60) -> list[FileResult
             path_to_result[r.path] = r
             
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if not ranked:
+        return []
+        
+    max_rrf = ranked[0][1]
     
     final_results = []
     # RRF scores are typically very small, multiply by 100 for display
     for p, s in ranked:
         r = path_to_result[p]
-        r.score = s * 100
+        # Base score from keyword matching (0-100)
+        kw_score = _score_result(query_atoms, r)
+        # Semantic/RRF contribution relative to the best semantic hit
+        rrf_score = (s / max_rrf) * 85 if max_rrf > 0 else 0
+        r.score = max(kw_score, rrf_score)
         final_results.append(r)
         
-    return final_results
+    return sorted(final_results, key=lambda x: getattr(x, 'score', 0), reverse=True)
+
+
+def _looks_like_filename(query: str) -> bool:
+    """True if query looks like a direct filename (has extension, no spaces)."""
+    q = query.strip()
+    if ' ' in q:
+        return False
+    # Must have a dot followed by 1-10 chars (extension)
+    parts = q.rsplit('.', 1)
+    if len(parts) == 2 and 1 <= len(parts[1]) <= 10:
+        return True
+    return False
 
 
 def _needs_semantic(query: str) -> bool:
@@ -836,16 +870,64 @@ def _needs_semantic(query: str) -> bool:
     words = query.split()
     if any(w.startswith("type:") for w in words):
         return False
+    # Single filename-like token → no semantic search needed
+    if _looks_like_filename(query):
+        return False
     if "." in query and " " not in query:
         return False
-    if len(words) >= 3:
+    # Only trigger semantic for genuinely abstract/NL queries (3+ non-trivial words)
+    filler = {"find", "search", "locate", "show", "me", "my", "the", "a", "an",
+              "where", "is", "get", "can", "you"}
+    meaningful_words = [w for w in words if w.lower() not in filler]
+    if len(meaningful_words) >= 3:
         return True
-        
-    abstract_signals = {"find", "show", "get", "about", "related", "similar",
-                        "like", "with", "containing", "regarding", "notes", "report", "what", "how"}
-    if any(w.lower() in abstract_signals for w in words):
+    abstract_signals = {"about", "related", "similar", "like", "with",
+                        "containing", "regarding", "notes", "report", "what", "how"}
+    if any(w.lower() in abstract_signals for w in meaningful_words):
         return True
     return False
+
+
+# ── Exact name search (Tier 0) ────────────────────────────────────────────────
+def _exact_name_search(name: str, limit: int = 15) -> list[FileResult]:
+    """Direct WHERE name = ? search — O(1) via index. Guaranteed to find exact filenames."""
+    shards = get_all_shard_paths()
+    if not shards:
+        return []
+    all_results = []
+    for shard_path in shards:
+        try:
+            conn = sqlite3.connect(shard_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT path, name, extension, size, mtime FROM files "
+                "WHERE name = ? COLLATE NOCASE AND size > 0 "
+                "ORDER BY mtime DESC LIMIT ?",
+                (name, limit),
+            ).fetchall()
+            conn.close()
+            all_results.extend([FileResult(**dict(r)) for r in rows])
+        except Exception:
+            pass
+    all_results.sort(key=lambda x: x.mtime, reverse=True)
+    return all_results[:limit]
+
+
+# ── Command prefix stripper ───────────────────────────────────────────────────
+_COMMAND_PREFIXES = [
+    "find me ", "find ", "search for ", "search ", "locate ",
+    "show me ", "where is my ", "where is ", "where's my ", "where's ",
+    "can you find ", "please find ", "look for ",
+]
+
+def _strip_command_prefix(query: str) -> str:
+    """Remove conversational prefixes like 'find', 'search for', 'show me' etc."""
+    q = query.strip()
+    lower = q.lower()
+    for prefix in _COMMAND_PREFIXES:
+        if lower.startswith(prefix):
+            return q[len(prefix):].strip()
+    return q
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -863,8 +945,10 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     the trigram or rapidfuzz fallback layers (approximate matches).
 
     Tiers:
-      0. Parse type: filter (#18)
-      0b. Detect category words in natural language
+      0. Exact name match (WHERE name = ?)
+      0a. Alias check
+      0b. Parse type:/content:/tag: filters
+      0c. Detect category words in natural language
       1. Bare filename → quick_search
       2. LLM intent → AND mode
       3. Relax: drop extension
@@ -881,8 +965,20 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     cached = _cache_get(stripped)
     if cached:
         return cached
+
+    # Strip conversational command prefixes: "find X" → "X"
+    stripped = _strip_command_prefix(stripped)
     
-    # 0. Alias check (Phase 3)
+    # ── Tier 0: Exact name match ──────────────────────────────────────────
+    # If the cleaned query looks like a filename, try exact match first
+    if _looks_like_filename(stripped):
+        exact = _exact_name_search(stripped, limit)
+        if exact:
+            for r in exact:
+                r.score = 100.0  # Perfect match
+            return exact, False
+    
+    # 0a. Alias check (Phase 3)
     try:
         from aliases import get_alias
         alias_path = get_alias(stripped)
@@ -901,7 +997,7 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     except ImportError:
         pass
 
-    # 0. Explicit content: syntax
+    # 0b. Explicit content: syntax
     content_query, stripped = _extract_content_filter(stripped)
     if content_query and not stripped:
         results = _content_search(content_query, limit)
@@ -912,20 +1008,46 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         results = _tag_search(tag_query, limit)
         return _filter_and_clean(results), False
 
-    # 0. Explicit type: syntax (#18) — e.g. "type:image rupendra"
+    # 0b. Explicit type: syntax (#18) — e.g. "type:image rupendra"
     type_extensions, stripped = _extract_type_filter(stripped)
 
-    # 0b. NL category detection — e.g. "find image named rupendra"
+    # 0c. NL category detection — e.g. "find image named rupendra"
     query_words = stripped.lower().split()
     nl_extensions, _ = _detect_category(query_words)
     category_extensions = type_extensions or nl_extensions
 
-    # 1. Quick path for bare filenames
+    # 1. Quick path for bare filenames (no spaces)
     if " " not in stripped and not type_extensions:
-        results = quick_search(stripped, limit)
-        if results:
-            atoms = _normalize_keywords([stripped])
-            return _rerank(atoms, results), False
+        # Try exact name match first
+        exact = _exact_name_search(stripped, limit)
+        if exact:
+            for r in exact:
+                r.score = 100.0
+            return exact, False
+            
+        # Extract implicit extension if present (e.g. A(q(a,b)).nb -> ext: nb, base: A(q(a,b)))
+        implicit_ext = None
+        base_name = stripped
+        if '.' in stripped:
+            parts = stripped.rsplit('.', 1)
+            if len(parts) == 2 and 1 <= len(parts[1]) <= 10:
+                base_name = parts[0]
+                implicit_ext = parts[1].lower()
+                
+        if implicit_ext:
+            results = _db_search([base_name], [implicit_ext], None, limit)
+            if results:
+                atoms = _normalize_keywords([base_name])
+                return _rerank(atoms, _filter_and_clean(results)), False
+            
+            # If not found exactly, pass it down to the full pipeline but WITH the extension!
+            stripped = base_name
+            category_extensions = [implicit_ext]
+        else:
+            results = quick_search(stripped, limit)
+            if results:
+                atoms = _normalize_keywords([stripped])
+                return _rerank(atoms, results), False
 
     # 2. LLM intent
     intent    = _parse_intent(stripped)
@@ -956,10 +1078,10 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         
     semantic_results = []
     if _needs_semantic(stripped):
-        semantic_results = _semantic_search(stripped, limit)
+        semantic_results = _semantic_search(stripped, extensions, limit)
         
     if semantic_results or content_results:
-        fused = _rrf_fusion(keyword_results, semantic_results, content_results)
+        fused = _rrf_fusion(atoms, keyword_results, semantic_results, content_results)
         if fused:
             return fused, False
             

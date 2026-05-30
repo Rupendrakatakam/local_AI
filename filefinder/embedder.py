@@ -14,6 +14,12 @@ from queue import PriorityQueue
 from typing import Optional, List, Dict
 from config_loader import get as cfg
 
+# Suppress noisy model loading output (progress bars, LOAD REPORT, HF warnings)
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(Path.home() / ".cache" / "torch" / "sentence_transformers"))
+
 LANCEDB_PATH = Path.home() / ".local" / "share" / "filefinder" / "vectors"
 
 # EXTS: We focus only on documents and texts for now, per user request.
@@ -113,6 +119,10 @@ class EmbeddingPipeline:
         if self._text_model is not None:
             return self._text_model
         try:
+            import logging as _logging
+            # Silence transformers/sentence_transformers during model load
+            for _logger_name in ("transformers", "sentence_transformers", "huggingface_hub"):
+                _logging.getLogger(_logger_name).setLevel(_logging.ERROR)
             from sentence_transformers import SentenceTransformer
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -132,6 +142,9 @@ class EmbeddingPipeline:
         if self._clip_model is not None:
             return self._clip_model
         try:
+            import logging as _logging
+            for _logger_name in ("transformers", "sentence_transformers", "huggingface_hub"):
+                _logging.getLogger(_logger_name).setLevel(_logging.ERROR)
             from sentence_transformers import SentenceTransformer
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"

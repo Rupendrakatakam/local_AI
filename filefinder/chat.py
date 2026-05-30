@@ -253,14 +253,27 @@ def _render_page(results: list[FileResult], page: int, total_pages: int) -> None
     table.add_column("Path",      style="white",      width=path_w, no_wrap=True, overflow="ellipsis")
     table.add_column("Size",      style="cyan",       width=9,      justify="right", no_wrap=True)
     table.add_column("Modified",  style="dim",        width=16,     no_wrap=True)
+    table.add_column("Match",     width=7,            justify="right", no_wrap=True)
 
     for i, r in enumerate(page_results, start + 1):
+        # Color the match score
+        score = getattr(r, 'score', 0.0)
+        if score >= 60:
+            score_str = f"[bold green]{score:.0f}%[/bold green]"
+        elif score >= 30:
+            score_str = f"[yellow]{score:.0f}%[/yellow]"
+        elif score > 0:
+            score_str = f"[dim]{score:.0f}%[/dim]"
+        else:
+            score_str = "[dim]—[/dim]"
+
         table.add_row(
             str(i),
             trunc(r.name, name_w),
             trunc(tilde_path(r.path), path_w),
             r.size_human,
             fmt_mtime(r.mtime),
+            score_str,
         )
 
     console.print(table)
