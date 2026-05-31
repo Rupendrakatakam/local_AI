@@ -63,13 +63,14 @@ def init_shard(conn) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name, path,
             content='files', content_rowid='rowid',
-            tokenize='unicode61'
+            tokenize='unicode61 separators "_-."'
         )
     """)
     
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
-            path UNINDEXED, content,
+            content,
+            content='files', content_rowid='rowid',
             tokenize='unicode61'
         )
     """)

@@ -28,22 +28,30 @@ CACHE_TTL  = float(cfg("cache_ttl_seconds", 30))
 # Update 69: Thread-local connection pool
 _local = threading.local()
 
+_shard_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=min(16, os.cpu_count() or 4),
+    thread_name_prefix="shard_query"
+)
+
 # Update 70: Query result cache
 _query_cache: dict[str, tuple[float, list, bool]] = {}
+_cache_lock = threading.Lock()
 
 def _cache_get(key: str):
-    if key in _query_cache:
-        ts, results, fuzzy = _query_cache[key]
-        if time.time() - ts < CACHE_TTL:
-            return results, fuzzy
-        del _query_cache[key]
-    return None
+    with _cache_lock:
+        if key in _query_cache:
+            ts, results, fuzzy = _query_cache[key]
+            if time.time() - ts < CACHE_TTL:
+                return results, fuzzy
+            del _query_cache[key]
+        return None
 
 def _cache_set(key: str, results, fuzzy):
-    if len(_query_cache) > 200:
-        oldest = min(_query_cache, key=lambda k: _query_cache[k][0])
-        del _query_cache[oldest]
-    _query_cache[key] = (time.time(), results, fuzzy)
+    with _cache_lock:
+        if len(_query_cache) > 200:
+            oldest = min(_query_cache, key=lambda k: _query_cache[k][0])
+            del _query_cache[oldest]
+        _query_cache[key] = (time.time(), results, fuzzy)
 
 # Update 74: Ollama rate limiter
 _ollama_semaphore = threading.Semaphore(cfg("ollama_max_concurrent", 3))
@@ -212,10 +220,9 @@ def _db_search(keywords: list[str],
     if not shards:
         return []
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        futures = [executor.submit(_db_search_single, p, keywords, extensions, directory, limit, use_or) for p in shards]
-        for f in concurrent.futures.as_completed(futures):
-            all_results.extend(f.result())
+    futures = [_shard_executor.submit(_db_search_single, p, keywords, extensions, directory, limit, use_or) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
     all_results.sort(key=lambda x: x.mtime, reverse=True)
     return all_results[:limit]
 
@@ -314,10 +321,9 @@ def _fts_search(keywords: list[str],
     if not shards:
         return []
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        futures = [executor.submit(_fts_search_single, p, keywords, extensions, directory, limit) for p in shards]
-        for f in concurrent.futures.as_completed(futures):
-            all_results.extend(f.result())
+    futures = [_shard_executor.submit(_fts_search_single, p, keywords, extensions, directory, limit) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
     all_results.sort(key=lambda x: x.mtime, reverse=True)
     return all_results[:limit]
 
@@ -400,10 +406,9 @@ def _trigram_search(query: str, limit: int = 15) -> list[FileResult]:
     if not q_trigrams: return []
     
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        futures = [executor.submit(_trigram_search_single, p, query, limit) for p in shards]
-        for f in concurrent.futures.as_completed(futures):
-            all_results.extend(f.result())
+    futures = [_shard_executor.submit(_trigram_search_single, p, query, limit) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
     all_results.sort(key=lambda x: x.mtime, reverse=True)
     return all_results[:limit]
 
@@ -448,10 +453,9 @@ def _content_search(query: str, limit: int = 15) -> list[FileResult]:
     shards = get_all_shard_paths()
     if not shards: return []
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        futures = [executor.submit(_content_search_single, p, query, limit) for p in shards]
-        for f in concurrent.futures.as_completed(futures):
-            all_results.extend(f.result())
+    futures = [_shard_executor.submit(_content_search_single, p, query, limit) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
     return all_results[:limit]
 
 def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
@@ -489,6 +493,8 @@ def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[F
         results = [FileResult(**dict(r)) for r in rows]
     except sqlite3.OperationalError:
         results = []
+    finally:
+        conn.close()
     return results
 
 
@@ -496,10 +502,9 @@ def _tag_search(query: str, limit: int = 15) -> list[FileResult]:
     shards = get_all_shard_paths()
     if not shards: return []
     all_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        futures = [executor.submit(_tag_search_single, p, query, limit) for p in shards]
-        for f in concurrent.futures.as_completed(futures):
-            all_results.extend(f.result())
+    futures = [_shard_executor.submit(_tag_search_single, p, query, limit) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
     return all_results[:limit]
 
 def _tag_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
@@ -554,9 +559,9 @@ def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
             return res
         except: return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(shards) or 1)) as executor:
-        for r in executor.map(fetch_rows, shards):
-            all_rows.extend(r)
+    futures = [_shard_executor.submit(fetch_rows, p) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_rows.extend(f.result())
             
     all_rows.sort(key=lambda x: x[4], reverse=True)
     rows = all_rows[:50000]
@@ -569,8 +574,9 @@ def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
             seen.add(norm)
             cache.append((norm, name, path, ext or "", size, mtime))
 
-    _fuzzy_cache = cache
-    _fuzzy_cache_time = now
+    with _fuzzy_cache_lock:
+        _fuzzy_cache = cache
+        _fuzzy_cache_time = now
     return cache
 
 
@@ -627,7 +633,7 @@ def _generate_sub_keywords(atoms: list[str]) -> list[str]:
 
 
 # ── Relevance scoring (Batch 4) ──────────────────────────────────────────────
-def _score_result(query_atoms: list[str], result: FileResult) -> float:
+def _score_result(query_atoms: list[str], result: FileResult, requested_extensions: Optional[list[str]] = None) -> float:
     """Score a result by relevance to query, not just recency."""
     name_lower = result.name.lower()
     name_norm = _normalize_for_fuzzy(result.name)
@@ -674,22 +680,24 @@ def _score_result(query_atoms: list[str], result: FileResult) -> float:
 
     # Behavioral boost (Phase 3) — 0 to 40 points
     try:
-        from behavior import get_rfm_boost, get_workspace_affinity, get_time_boost
-        score += get_rfm_boost(result.path)
-        score += get_workspace_affinity(result.path)
-        score += get_time_boost(result.path)
+        from behavior import get_all_behavior_boosts
+        score += get_all_behavior_boosts(result.path)
     except ImportError:
         pass
+
+    # Extension priority boost
+    if requested_extensions and result.extension and result.extension.lower() in requested_extensions:
+        score += 80.0  # Massive priority boost for matching the requested format
 
     return score
 
 
-def _rerank(query_atoms: list[str], results: list[FileResult]) -> list[FileResult]:
+def _rerank(query_atoms: list[str], results: list[FileResult], requested_extensions: Optional[list[str]] = None) -> list[FileResult]:
     """Re-rank results by relevance score instead of just mtime."""
     if not query_atoms or len(results) <= 1:
         return results
     for r in results:
-        r.score = _score_result(query_atoms, r)
+        r.score = _score_result(query_atoms, r, requested_extensions)
     return sorted(results, key=lambda r: r.score, reverse=True)
 
 
@@ -793,26 +801,35 @@ def _semantic_search(query: str, extensions: Optional[list[str]] = None, limit: 
         # Hydrate paths into FileResults from ALL shards (not just legacy DB)
         final_results = []
         seen_paths = set()
+        paths_to_query = file_results[:limit*3]
+        if not paths_to_query:
+            return []
+            
         for shard_path in get_all_shard_paths():
             try:
                 conn = sqlite3.connect(shard_path)
                 conn.row_factory = sqlite3.Row
-                for p in file_results[:limit*3]:
-                    if p in seen_paths:
-                        continue
-                    if extensions:
-                        placeholders = ",".join("?" * len(extensions))
-                        ext_params = [e.lower() for e in extensions]
-                        r = conn.execute(
-                            f"SELECT path, name, extension, size, mtime FROM files WHERE path=? AND extension IN ({placeholders})", (p, *ext_params)
-                        ).fetchone()
-                    else:
-                        r = conn.execute(
-                            "SELECT path, name, extension, size, mtime FROM files WHERE path=?", (p,)
-                        ).fetchone()
-                    if r:
-                        final_results.append(FileResult(**dict(r)))
-                        seen_paths.add(p)
+                
+                paths_to_query = [p for p in paths_to_query if p not in seen_paths]
+                if not paths_to_query:
+                    conn.close()
+                    break
+                    
+                path_placeholders = ",".join("?" * len(paths_to_query))
+                
+                if extensions:
+                    ext_placeholders = ",".join("?" * len(extensions))
+                    ext_params = [e.lower() for e in extensions]
+                    query = f"SELECT path, name, extension, size, mtime FROM files WHERE path IN ({path_placeholders}) AND extension IN ({ext_placeholders})"
+                    rows = conn.execute(query, tuple(paths_to_query) + tuple(ext_params)).fetchall()
+                else:
+                    query = f"SELECT path, name, extension, size, mtime FROM files WHERE path IN ({path_placeholders})"
+                    rows = conn.execute(query, tuple(paths_to_query)).fetchall()
+                    
+                for r in rows:
+                    final_results.append(FileResult(**dict(r)))
+                    seen_paths.add(r["path"])
+                    
                 conn.close()
             except Exception:
                 pass
@@ -823,7 +840,7 @@ def _semantic_search(query: str, extensions: Optional[list[str]] = None, limit: 
         return []
 
 
-def _rrf_fusion(query_atoms: list[str], *result_lists: list[FileResult], k: int = 60) -> list[FileResult]:
+def _rrf_fusion(query_atoms: list[str], *result_lists: list[FileResult], requested_extensions: Optional[list[str]] = None, k: int = 60) -> list[FileResult]:
     """Merge any number of result lists using Reciprocal Rank Fusion."""
     scores: dict[str, float] = {}
     path_to_result: dict[str, FileResult] = {}
@@ -844,7 +861,7 @@ def _rrf_fusion(query_atoms: list[str], *result_lists: list[FileResult], k: int 
     for p, s in ranked:
         r = path_to_result[p]
         # Base score from keyword matching (0-100)
-        kw_score = _score_result(query_atoms, r)
+        kw_score = _score_result(query_atoms, r, requested_extensions)
         # Semantic/RRF contribution relative to the best semantic hit
         rrf_score = (s / max_rrf) * 85 if max_rrf > 0 else 0
         r.score = max(kw_score, rrf_score)
@@ -939,6 +956,24 @@ def quick_search(query: str, limit: int = 15) -> list[FileResult]:
 
 
 def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
+    stripped = query.strip()
+
+    cached = _cache_get(stripped)
+    if cached:
+        return cached
+
+    result = _search_uncached(stripped, limit)
+
+    _cache_set(
+        stripped,
+        result[0],
+        result[1]
+    )
+
+    return result
+
+
+def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     """
     Cascading search with FTS5, trigram fallback, fuzzy fallback and relevance scoring.
     Returns (results, is_fuzzy) — is_fuzzy=True when results came from
@@ -960,11 +995,6 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
       7. Fuzzy fallback (Batch 4)
     """
     stripped = query.strip()
-
-    # Update 70: Query cache check
-    cached = _cache_get(stripped)
-    if cached:
-        return cached
 
     # Strip conversational command prefixes: "find X" → "X"
     stripped = _strip_command_prefix(stripped)
@@ -997,6 +1027,18 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     except ImportError:
         pass
 
+    # 0a. Explicit extension extraction from NL queries (e.g., "list down all .cpp files")
+    explicit_exts = []
+    new_words = []
+    for word in stripped.split():
+        if word.startswith('.') and len(word) > 1 and all(c.isalnum() for c in word[1:]):
+            explicit_exts.append(word[1:].lower())
+        else:
+            new_words.append(word)
+    
+    if explicit_exts:
+        stripped = " ".join(new_words)
+
     # 0b. Explicit content: syntax
     content_query, stripped = _extract_content_filter(stripped)
     if content_query and not stripped:
@@ -1010,6 +1052,9 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
 
     # 0b. Explicit type: syntax (#18) — e.g. "type:image rupendra"
     type_extensions, stripped = _extract_type_filter(stripped)
+
+    if explicit_exts:
+        type_extensions = (type_extensions or []) + explicit_exts
 
     # 0c. NL category detection — e.g. "find image named rupendra"
     query_words = stripped.lower().split()
@@ -1038,7 +1083,16 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
             results = _db_search([base_name], [implicit_ext], None, limit)
             if results:
                 atoms = _normalize_keywords([base_name])
-                return _rerank(atoms, _filter_and_clean(results)), False
+                
+                # relaxed search pool for priority 2
+                relaxed = quick_search(base_name, limit)
+                seen = {r.path for r in results}
+                for r in relaxed:
+                    if r.path not in seen:
+                        results.append(r)
+                        seen.add(r.path)
+                        
+                return _rerank(atoms, _filter_and_clean(results), [implicit_ext]), False
             
             # If not found exactly, pass it down to the full pipeline but WITH the extension!
             stripped = base_name
@@ -1070,6 +1124,21 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         
     keyword_results = _filter_and_clean(results)
     
+    # Priority 2: Pool relaxed results if an extension was requested
+    if extensions:
+        relaxed = _fts_search(keywords, None, directory, limit)
+        if not relaxed:
+            relaxed = _db_search(keywords, None, directory, limit)
+        seen = {r.path for r in keyword_results}
+        for r in _filter_and_clean(relaxed):
+            if r.path not in seen:
+                keyword_results.append(r)
+                seen.add(r.path)
+    
+    semantic_future = None
+    if _needs_semantic(stripped):
+        semantic_future = _shard_executor.submit(_semantic_search, stripped, extensions, limit)
+
     content_results = []
     if content_query:
         content_results = _content_search(content_query, limit)
@@ -1077,24 +1146,19 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
         content_results = _content_search(stripped, limit)
         
     semantic_results = []
-    if _needs_semantic(stripped):
-        semantic_results = _semantic_search(stripped, extensions, limit)
+    if semantic_future:
+        try:
+            semantic_results = semantic_future.result(timeout=0.5)
+        except Exception:
+            pass
         
     if semantic_results or content_results:
-        fused = _rrf_fusion(atoms, keyword_results, semantic_results, content_results)
+        fused = _rrf_fusion(atoms, keyword_results, semantic_results, content_results, requested_extensions=extensions)
         if fused:
             return fused, False
             
     if keyword_results:
-        return _rerank(atoms, keyword_results), False
-
-    # 3. Drop extension
-    if extensions:
-        results = _fts_search(keywords, None, directory, limit)
-        if not results:
-            results = _db_search(keywords, None, directory, limit)
-        if results:
-            return _rerank(atoms, _filter_and_clean(results)), False
+        return _rerank(atoms, keyword_results, requested_extensions=extensions), False
 
     # 4. Drop directory
     if directory:

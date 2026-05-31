@@ -56,6 +56,9 @@ class EmbeddingPipeline:
         
         self._worker_thread = None
         self._queue = PriorityQueue(maxsize=500)
+        self._tag_worker_thread = None
+        import queue
+        self._tag_queue = queue.Queue(maxsize=500)
         self._stop_event = threading.Event()
         self._progress = {"total": 0, "done": 0, "errors": 0}
 
@@ -278,7 +281,8 @@ class EmbeddingPipeline:
             return
             
         try:
-            self._image_table.delete(f'path = "{path}"')
+            escaped_path = path.replace("'", "''")
+            self._image_table.delete(f"path = '{escaped_path}'")
         except Exception:
             pass
             
@@ -294,7 +298,8 @@ class EmbeddingPipeline:
             return
         
         try:
-            table.delete(f'path = "{path}"')
+            escaped_path = path.replace("'", "''")
+            table.delete(f"path = '{escaped_path}'")
         except Exception:
             pass
             
@@ -332,12 +337,50 @@ class EmbeddingPipeline:
 
     def start_worker(self):
         """Starts background worker if not running."""
-        if self._worker_thread and self._worker_thread.is_alive():
-            return
         self._stop_event.clear()
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
-        log.info("Embedding worker started")
+        if not (self._worker_thread and self._worker_thread.is_alive()):
+            self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker_thread.start()
+            log.info("Embedding worker started")
+        if not (self._tag_worker_thread and self._tag_worker_thread.is_alive()):
+            self._tag_worker_thread = threading.Thread(target=self._tag_worker_loop, daemon=True)
+            self._tag_worker_thread.start()
+            log.info("Tagging worker started")
+
+    def _tag_worker_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                import queue
+                path, text = self._tag_queue.get(timeout=2)
+            except queue.Empty:
+                continue
+            except Exception:
+                continue
+                
+            try:
+                import sqlite3, requests
+                from config_loader import get as cfg
+                from db_utils import get_shard_path
+                db_path = get_shard_path(path)
+                conn = sqlite3.connect(db_path)
+                cursor = conn.execute("SELECT tags FROM file_tags WHERE path = ?", (path,))
+                if not cursor.fetchone():
+                    OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
+                    MODEL = cfg("ollama_model", "phi3:mini")
+                    
+                    snippet = text[:500]
+                    prompt = f"Given the filename {path} and snippet: '{snippet}', output 1-3 comma-separated categories for this file (e.g. work, personal, finance, code, media, document, homework, tax). Only output the tags, nothing else."
+                    
+                    resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=10)
+                    if resp.status_code == 200:
+                        tags = resp.json().get("response", "").strip().lower()
+                        tags = tags.replace('"', '').replace('.', '').replace('tags:', '').replace('categories:', '').strip()
+                        if tags:
+                            conn.execute("INSERT OR REPLACE INTO file_tags (path, tags) VALUES (?, ?)", (path, tags))
+                            conn.commit()
+                conn.close()
+            except Exception as e:
+                log.debug("Auto-tagging failed for %s: %s", path, e)
 
     def _worker_loop(self):
         while not self._stop_event.is_set():
@@ -386,9 +429,13 @@ class EmbeddingPipeline:
                     db_path = get_shard_path(path)
                     db_path.parent.mkdir(parents=True, exist_ok=True)
                     conn = sqlite3.connect(db_path)
-                    conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
-                    conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
-                    conn.commit()
+                    cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
+                    row = cursor.fetchone()
+                    if row:
+                        rowid = row[0]
+                        conn.execute("DELETE FROM file_content_fts WHERE rowid = ?", (rowid,))
+                        conn.execute("INSERT INTO file_content_fts(rowid, content) VALUES (?, ?)", (rowid, text))
+                        conn.commit()
                     conn.close()
                 except Exception as e:
                     log.debug(f"Failed to save image OCR to sqlite: {e}")
@@ -423,33 +470,20 @@ class EmbeddingPipeline:
                 return
                 
             # Content changed (or new file), save to FTS and update hash
-            conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
-            conn.execute("INSERT INTO file_content_fts(path, content) VALUES (?, ?)", (path, text))
-            conn.execute("INSERT OR REPLACE INTO embedding_hashes(path, hash) VALUES (?, ?)", (path, content_hash))
-            conn.commit()
+            cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
+            row = cursor.fetchone()
+            if row:
+                rowid = row[0]
+                conn.execute("DELETE FROM file_content_fts WHERE rowid = ?", (rowid,))
+                conn.execute("INSERT INTO file_content_fts(rowid, content) VALUES (?, ?)", (rowid, text))
+                conn.execute("INSERT OR REPLACE INTO embedding_hashes(path, hash) VALUES (?, ?)", (path, content_hash))
+                conn.commit()
             
-            # Feature 5.2: Auto-Tagging
-            cursor = conn.execute("SELECT tags FROM file_tags WHERE path = ?", (path,))
-            if not cursor.fetchone():
+                # Feature 5.2: Auto-Tagging (Moved to background worker)
                 try:
-                    import requests
-                    from config_loader import get as cfg
-                    OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
-                    MODEL = cfg("ollama_model", "phi3:mini")
-                    
-                    snippet = text[:500]
-                    prompt = f"Given the filename {path} and snippet: '{snippet}', output 1-3 comma-separated categories for this file (e.g. work, personal, finance, code, media, document, homework, tax). Only output the tags, nothing else."
-                    
-                    resp = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": prompt, "stream": False}, timeout=10)
-                    if resp.status_code == 200:
-                        tags = resp.json().get("response", "").strip().lower()
-                        # Clean up
-                        tags = tags.replace('"', '').replace('.', '').replace('tags:', '').replace('categories:', '').strip()
-                        if tags:
-                            conn.execute("INSERT OR REPLACE INTO file_tags (path, tags) VALUES (?, ?)", (path, tags))
-                            conn.commit()
-                except Exception as tag_e:
-                    log.debug("Auto-tagging failed for %s: %s", path, tag_e)
+                    self._tag_queue.put_nowait((path, text))
+                except Exception:
+                    pass
 
             conn.close()
         except Exception as e:

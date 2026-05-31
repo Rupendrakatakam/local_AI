@@ -79,7 +79,8 @@ def is_ignored(path: str, patterns: list[str]) -> bool:
 # ── Write counter + VACUUM (#16) ─────────────────────────────────────────────
 _write_count = 0
 _write_lock  = threading.Lock()
-db_lock      = threading.Lock()
+from collections import defaultdict
+_shard_locks = defaultdict(threading.Lock)
 
 _db_pool: dict[str, sqlite3.Connection] = {}
 _db_pool_lock = threading.Lock()
@@ -87,6 +88,10 @@ _db_pool_lock = threading.Lock()
 def get_all_active_dbs() -> list[sqlite3.Connection]:
     with _db_pool_lock:
         return list(_db_pool.values())
+
+def get_all_active_dbs_with_paths() -> list[tuple[str, sqlite3.Connection]]:
+    with _db_pool_lock:
+        return list(_db_pool.items())
 
 def _maybe_vacuum() -> None:
     """Increment write counter; VACUUM in background every VACUUM_EVERY writes."""
@@ -99,9 +104,17 @@ def _maybe_vacuum() -> None:
 
 
 def _run_vacuum(count: int) -> None:
-    for conn in get_all_active_dbs():
+    # Use dedicated connections for VACUUM to avoid locking the shared ones
+    for shard_path, _ in get_all_active_dbs_with_paths():
         try:
-            conn.execute("VACUUM")
+            with _shard_locks[shard_path]:
+                # Temporary connection
+                v_conn = sqlite3.connect(shard_path)
+                try:
+                    v_conn.execute("VACUUM")
+                    v_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    v_conn.close()
         except Exception as e:
             log.warning("VACUUM failed on a shard: %s", e)
     log.info("VACUUM complete after %d writes.", count)
@@ -216,7 +229,8 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
         # Feature 5.3: Compute hash outside the db lock
         file_hash = _compute_file_hash(p, st.st_size)
         
-        with db_lock:
+        shard_key = str(get_shard_path(path))
+        with _shard_locks[shard_key]:
             # Check if row exists to check if modified
             cursor = conn.execute("SELECT rowid, size, mtime FROM files WHERE path = ?", (str(p),))
             row = cursor.fetchone()
@@ -224,9 +238,10 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
                 if row[1] == st.st_size and abs(row[2] - st.st_mtime) < 0.001:
                     return
                 conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
+                conn.execute("DELETE FROM files WHERE path = ?", (str(p),))
                 
             cursor = conn.execute(
-                "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?)",
+                "INSERT INTO files VALUES (?,?,?,?,?)",
                 (str(p), p.name, p.suffix.lower().lstrip("."), st.st_size, st.st_mtime),
             )
             rowid = cursor.lastrowid
@@ -264,12 +279,10 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
 
 def delete(path: str) -> None:
     conn = get_db(path)
-    with db_lock:
-        cursor = conn.execute("SELECT rowid FROM files WHERE path = ?", (path,))
-        row = cursor.fetchone()
-        if row:
-            conn.execute("DELETE FROM name_trigrams WHERE file_id = ?", (row[0],))
-        conn.execute("DELETE FROM file_content_fts WHERE path = ?", (path,))
+    shard_key = str(get_shard_path(path))
+    with _shard_locks[shard_key]:
+        conn.execute("DELETE FROM name_trigrams WHERE file_id IN (SELECT rowid FROM files WHERE path = ?)", (path,))
+        conn.execute("DELETE FROM file_content_fts WHERE rowid IN (SELECT rowid FROM files WHERE path = ?)", (path,))
         conn.execute("DELETE FROM files WHERE path = ?", (path,))
         conn.commit()
     _maybe_vacuum()   # #16
@@ -303,16 +316,20 @@ def full_scan(ignore_patterns: list[str]) -> None:
             upsert(full_path, ignore_patterns, commit=False)
             count += 1
             if count % 500 == 0:
-                with db_lock:
-                    for conn in get_all_active_dbs():
-                        conn.commit()
+                for shard_key, conn in get_all_active_dbs_with_paths():
+                    with _shard_locks[shard_key]:
+                        try:
+                            conn.execute("DELETE FROM files WHERE size = 0")
+                            conn.commit()
+                        except sqlite3.OperationalError:
+                            pass
                 throttle_if_busy()
                 progress_file.write_text(str(count))
             # Update 78: memory cap check every 1000 files
             if count % 1000 == 0:
                 _check_memory()
-    with db_lock:
-        for conn in get_all_active_dbs():
+    with _db_pool_lock:
+        for conn in _db_pool.values():
             conn.commit()  # Final commit
     progress_file.unlink(missing_ok=True)
     log.info("Full scan complete — %d files indexed.", count)
@@ -349,13 +366,16 @@ class Debouncer:
     def flush_all(self):
         """Cancel all timers and process pending files immediately."""
         with self._lock:
-            for path, timer in self._pending.items():
+            pending_copy = list(self._pending.keys())
+            for timer in self._pending.values():
                 timer.cancel()
-                try:
-                    upsert(path, self.ignore_patterns)
-                except Exception:
-                    pass
             self._pending.clear()
+        
+        for path in pending_copy:
+            try:
+                upsert(path, self.ignore_patterns)
+            except Exception:
+                pass
         log.info("Flushed all pending upserts.")
 
 
@@ -378,12 +398,14 @@ def _wal_checkpoint_loop():
     while True:
         time.sleep(300)  # every 5 minutes
         try:
-            with db_lock:
-                for conn in get_all_active_dbs():
-                    try:
-                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    except Exception:
-                        pass
+            # Snapshot connections to avoid blocking _db_pool_lock
+            dbs = get_all_active_dbs()
+            for conn in dbs:
+                try:
+                    # PASSIVE checkpoint doesn't require a write lock, so we don't need _shard_locks
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
             log.debug("WAL checkpoint complete.")
         except Exception:
             pass
