@@ -71,6 +71,14 @@ def api_preview():
     if not path or not os.path.exists(path):
         return jsonify({"type": "error", "content": "File not found"}), 404
         
+    # Security: prevent path traversal
+    try:
+        watch_path = Path(cfg("watch_path", "~")).expanduser().resolve()
+        resolved = Path(path).resolve()
+        resolved.relative_to(watch_path)
+    except (ValueError, RuntimeError):
+        return jsonify({"type": "error", "content": "Access denied"}), 403
+        
     ext = Path(path).suffix.lower()
     
     # Media preview (image, video, audio): Return the file directly

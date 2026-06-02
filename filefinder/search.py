@@ -304,6 +304,7 @@ def _filter_and_clean(results: list[FileResult]) -> list[FileResult]:
 _fuzzy_cache: list[tuple[str, str, str, str, int, float]] = []
 _fuzzy_cache_time: float = 0
 FUZZY_CACHE_TTL = 300  # 5 minutes
+_fuzzy_cache_lock = threading.Lock()
 
 _DELIM_RE = re.compile(r'[_\-\.\s]+')
 
@@ -480,7 +481,7 @@ def _content_search_single(db_path: Path, query: str, limit: int = 15) -> list[F
     query_str = """
         SELECT files.path, files.name, files.extension, files.size, files.mtime 
         FROM file_content_fts 
-        JOIN files ON files.path = file_content_fts.path 
+        JOIN files ON files.rowid = file_content_fts.rowid 
         WHERE file_content_fts MATCH ? AND files.size > 0
     """
     if not get_show_hidden():
@@ -633,7 +634,7 @@ def _generate_sub_keywords(atoms: list[str]) -> list[str]:
 
 
 # ── Relevance scoring (Batch 4) ──────────────────────────────────────────────
-def _score_result(query_atoms: list[str], result: FileResult, requested_extensions: Optional[list[str]] = None) -> float:
+def _score_result(query_atoms: list[str], result: FileResult, requested_extensions: Optional[list[str]] = None, behavioral_boost: float = 0.0) -> float:
     """Score a result by relevance to query, not just recency."""
     name_lower = result.name.lower()
     name_norm = _normalize_for_fuzzy(result.name)
@@ -679,11 +680,7 @@ def _score_result(query_atoms: list[str], result: FileResult, requested_extensio
     score -= depth * 2
 
     # Behavioral boost (Phase 3) — 0 to 40 points
-    try:
-        from behavior import get_all_behavior_boosts
-        score += get_all_behavior_boosts(result.path)
-    except ImportError:
-        pass
+    score += behavioral_boost
 
     # Extension priority boost
     if requested_extensions and result.extension and result.extension.lower() in requested_extensions:
@@ -696,8 +693,14 @@ def _rerank(query_atoms: list[str], results: list[FileResult], requested_extensi
     """Re-rank results by relevance score instead of just mtime."""
     if not query_atoms or len(results) <= 1:
         return results
+    try:
+        from behavior import get_all_boosts_batch
+        boosts = get_all_boosts_batch([r.path for r in results])
+    except ImportError:
+        boosts = {}
     for r in results:
-        r.score = _score_result(query_atoms, r, requested_extensions)
+        boost = boosts.get(r.path, 0.0)
+        r.score = _score_result(query_atoms, r, requested_extensions, behavioral_boost=boost)
     return sorted(results, key=lambda r: r.score, reverse=True)
 
 
@@ -742,7 +745,66 @@ def _parse_intent(query: str) -> dict:
     return {"keywords": words or query.split(), "extension": None, "directory": None}
 
 
+def _parse_intent_local(query: str) -> dict:
+    """Fast local heuristic-based intent parser using regex and filler word lists."""
+    stripped = _strip_command_prefix(query)
+    
+    # 2. Extract directory hint: e.g. "in Downloads", "under Documents"
+    directory = None
+    dir_match = re.search(r'\b(?:in|under|inside)\s+([a-zA-Z0-9_\-\./~]+)', stripped, re.IGNORECASE)
+    if dir_match:
+        directory = dir_match.group(1)
+        stripped = stripped[:dir_match.start()].strip() + " " + stripped[dir_match.end():].strip()
+        stripped = stripped.strip()
+        
+    # 3. Extract dot extension: e.g. ".py" or ".pdf"
+    extension = None
+    ext_match = re.search(r'\.([a-zA-Z0-9]+)\b', stripped)
+    if ext_match:
+        extension = ext_match.group(1).lower()
+        stripped = stripped[:ext_match.start()].strip() + " " + stripped[ext_match.end():].strip()
+        stripped = stripped.strip()
+
+    # 4. Extract keywords, filtering out common search filler words
+    filler = {
+        "can", "you", "find", "the", "where", "is", "my", "show", "me",
+        "a", "an", "that", "this", "named", "called", "in", "under", "inside",
+        "file", "document", "image", "photo", "video", "audio", "script",
+        "spreadsheet", "archive", "text", "and", "or", "of", "to", "for", "with", "all"
+    }
+    
+    common_extensions = {
+        "pdf", "docx", "doc", "txt", "md", "csv", "json", "py", "js", "ts", "cpp", "c", "h", "java", "rs", "go", "sh", "jpg", "png", "zip"
+    }
+    
+    words = []
+    for w in stripped.split():
+        w_lower = w.lower()
+        if w_lower in filler:
+            continue
+        if w_lower in common_extensions:
+            if not extension:
+                extension = w_lower
+            continue
+        # Clean punctuation from keywords
+        w_clean = re.sub(r'[^a-zA-Z0-9_\-\.]', '', w_lower)
+        if len(w_clean) >= 2:
+            words.append(w_clean)
+            
+    if not words:
+        words = [w.lower() for w in stripped.split() if w.lower() not in filler]
+    if not words:
+        words = [w.lower() for w in stripped.split()]
+        
+    return {
+        "keywords": words,
+        "extension": extension,
+        "directory": directory
+    }
+
+
 def _resolve_directory(hint: Optional[str]) -> Optional[str]:
+
     if not hint:
         return None
     if hint.startswith("/"):
@@ -798,41 +860,46 @@ def _semantic_search(query: str, extensions: Optional[list[str]] = None, limit: 
                 except Exception:
                     pass
         
-        # Hydrate paths into FileResults from ALL shards (not just legacy DB)
+        # Hydrate paths into FileResults from their respective shards
         final_results = []
-        seen_paths = set()
         paths_to_query = file_results[:limit*3]
         if not paths_to_query:
             return []
             
-        for shard_path in get_all_shard_paths():
+        from db_utils import get_shard_path
+        from collections import defaultdict
+        paths_by_shard = defaultdict(list)
+        for p in paths_to_query:
+            paths_by_shard[get_shard_path(p)].append(p)
+            
+        for shard_path, shard_paths in paths_by_shard.items():
+            if not shard_path.exists():
+                continue
             try:
                 conn = sqlite3.connect(shard_path)
                 conn.row_factory = sqlite3.Row
                 
-                paths_to_query = [p for p in paths_to_query if p not in seen_paths]
-                if not paths_to_query:
-                    conn.close()
-                    break
-                    
-                path_placeholders = ",".join("?" * len(paths_to_query))
+                path_placeholders = ",".join("?" * len(shard_paths))
                 
                 if extensions:
                     ext_placeholders = ",".join("?" * len(extensions))
                     ext_params = [e.lower() for e in extensions]
                     query = f"SELECT path, name, extension, size, mtime FROM files WHERE path IN ({path_placeholders}) AND extension IN ({ext_placeholders})"
-                    rows = conn.execute(query, tuple(paths_to_query) + tuple(ext_params)).fetchall()
+                    rows = conn.execute(query, tuple(shard_paths) + tuple(ext_params)).fetchall()
                 else:
                     query = f"SELECT path, name, extension, size, mtime FROM files WHERE path IN ({path_placeholders})"
-                    rows = conn.execute(query, tuple(paths_to_query)).fetchall()
+                    rows = conn.execute(query, tuple(shard_paths)).fetchall()
                     
                 for r in rows:
                     final_results.append(FileResult(**dict(r)))
-                    seen_paths.add(r["path"])
                     
                 conn.close()
             except Exception:
                 pass
+                
+        # Sort final_results to match the original order of file_results (best match first)
+        path_to_rank = {p: i for i, p in enumerate(file_results)}
+        final_results.sort(key=lambda r: path_to_rank.get(r.path, 999999))
         return final_results[:limit]
     except Exception as e:
         import logging
@@ -857,11 +924,17 @@ def _rrf_fusion(query_atoms: list[str], *result_lists: list[FileResult], request
     max_rrf = ranked[0][1]
     
     final_results = []
+    try:
+        from behavior import get_all_boosts_batch
+        boosts = get_all_boosts_batch([p for p, _ in ranked])
+    except ImportError:
+        boosts = {}
     # RRF scores are typically very small, multiply by 100 for display
     for p, s in ranked:
         r = path_to_result[p]
+        boost = boosts.get(p, 0.0)
         # Base score from keyword matching (0-100)
-        kw_score = _score_result(query_atoms, r, requested_extensions)
+        kw_score = _score_result(query_atoms, r, requested_extensions, behavioral_boost=boost)
         # Semantic/RRF contribution relative to the best semantic hit
         rrf_score = (s / max_rrf) * 85 if max_rrf > 0 else 0
         r.score = max(kw_score, rrf_score)
@@ -1103,9 +1176,9 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
                 atoms = _normalize_keywords([stripped])
                 return _rerank(atoms, results), False
 
-    # 2. LLM intent
-    intent    = _parse_intent(stripped)
-    keywords  = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
+    # 2. Fast local intent extraction (no Ollama call)
+    intent = _parse_intent_local(stripped)
+    keywords = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
     extension = intent.get("extension")
     directory = _resolve_directory(intent.get("directory"))
 
@@ -1206,6 +1279,24 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     results = _fuzzy_search(stripped, limit)
     if results:
         return results, True
+
+    # 8. LLM Intent Fallback (Only run if local search yields 0 results)
+    intent_llm = _parse_intent(stripped)
+    keywords_llm = intent_llm.get("keywords")
+    if keywords_llm:
+        extension_llm = intent_llm.get("extension")
+        directory_llm = _resolve_directory(intent_llm.get("directory"))
+        extensions_llm = category_extensions if category_extensions else ([extension_llm] if extension_llm else None)
+        if category_extensions:
+            _, keywords_llm = _detect_category(keywords_llm)
+        atoms_llm = _normalize_keywords(keywords_llm)
+
+        results = _fts_search(keywords_llm, extensions_llm, directory_llm, limit)
+        if not results:
+            results = _db_search(keywords_llm, extensions_llm, directory_llm, limit)
+        keyword_results = _filter_and_clean(results)
+        if keyword_results:
+            return _rerank(atoms_llm, keyword_results, requested_extensions=extensions_llm), False
 
     return [], False
 

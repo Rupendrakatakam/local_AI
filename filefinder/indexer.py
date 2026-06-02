@@ -223,6 +223,12 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
             return
         if is_ignored(str(p), ignore_patterns):
             return
+        
+        # Ensure we skip hidden directories (like .git) and SKIP_DIRS 
+        if any(part.startswith('.') and part != '.' for part in p.parts[:-1]):
+            return
+        if any(part in SKIP_DIRS for part in p.parts):
+            return
             
         conn = get_db(path)
         

@@ -281,8 +281,8 @@ class EmbeddingPipeline:
             return
             
         try:
-            escaped_path = path.replace("'", "''")
-            self._image_table.delete(f"path = '{escaped_path}'")
+            import json
+            self._image_table.delete(f"path = {json.dumps(path)}")
         except Exception:
             pass
             
@@ -298,8 +298,8 @@ class EmbeddingPipeline:
             return
         
         try:
-            escaped_path = path.replace("'", "''")
-            table.delete(f"path = '{escaped_path}'")
+            import json
+            table.delete(f"path = {json.dumps(path)}")
         except Exception:
             pass
             
@@ -381,6 +381,14 @@ class EmbeddingPipeline:
                 conn.close()
             except Exception as e:
                 log.debug("Auto-tagging failed for %s: %s", path, e)
+                
+            try:
+                import os, time
+                if os.getloadavg()[0] > 2.0:
+                    log.debug("High CPU load detected in tag worker. Sleeping for 2s.")
+                    time.sleep(2.0)
+            except OSError:
+                pass
 
     def _worker_loop(self):
         while not self._stop_event.is_set():
