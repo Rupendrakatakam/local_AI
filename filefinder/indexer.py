@@ -12,6 +12,7 @@ import time
 import fnmatch
 import sqlite3
 import logging
+import ast
 import hashlib
 import resource
 import threading
@@ -209,6 +210,23 @@ def _compute_file_hash(path: Path, size: int) -> str:
         pass
     return hasher.hexdigest()
 
+def _extract_code_symbols(path: Path) -> list[tuple[str, str]]:
+    """Feature 1.1: Extract class and function names from Python files."""
+    if path.suffix != ".py":
+        return []
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        symbols = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                symbols.append((node.name, "class"))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                symbols.append((node.name, "function"))
+        return symbols
+    except Exception:
+        return []
+
 
 def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
     try:
@@ -263,6 +281,14 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
             # Store duplicate hash
             conn.execute("INSERT OR REPLACE INTO file_hashes (path, hash, size) VALUES (?, ?, ?)", 
                          (str(p), file_hash, st.st_size))
+                         
+            # Feature 1.1: Code symbols
+            conn.execute("DELETE FROM code_symbols WHERE path = ?", (str(p),))
+            if p.suffix == ".py":
+                symbols = _extract_code_symbols(p)
+                if symbols:
+                    conn.executemany("INSERT INTO code_symbols (symbol, path, type) VALUES (?, ?, ?)",
+                                     [(sym[0], str(p), sym[1]) for sym in symbols])
                 
             if commit:
                 conn.commit()
@@ -289,6 +315,7 @@ def delete(path: str) -> None:
     with _shard_locks[shard_key]:
         conn.execute("DELETE FROM name_trigrams WHERE file_id IN (SELECT rowid FROM files WHERE path = ?)", (path,))
         conn.execute("DELETE FROM file_content_fts WHERE rowid IN (SELECT rowid FROM files WHERE path = ?)", (path,))
+        conn.execute("DELETE FROM code_symbols WHERE path = ?", (path,))
         conn.execute("DELETE FROM files WHERE path = ?", (path,))
         conn.commit()
     _maybe_vacuum()   # #16

@@ -144,6 +144,15 @@ def _extract_tag_filter(query: str) -> tuple[Optional[str], str]:
         return tag_query.lower(), cleaned.strip()
     return None, query
 
+def _extract_code_filter(query: str) -> tuple[Optional[str], str]:
+    """Parses 'code:my_func' or 'code:"my class"'."""
+    match = re.search(r'\bcode:(?:"([^"]+)"|(\S+))', query, re.IGNORECASE)
+    if match:
+        code_query = match.group(1) or match.group(2)
+        cleaned = query[:match.start()].strip() + " " + query[match.end():].strip()
+        return code_query.lower(), cleaned.strip()
+    return None, query
+
 
 # ── Natural language category detector ────────────────────────────────────────
 def _detect_category(words: list[str]) -> tuple[Optional[list[str]], list[str]]:
@@ -530,6 +539,54 @@ def _tag_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileR
     
     try:
         rows = conn.execute(query_str, [clean_query, limit]).fetchall()
+        results = [FileResult(**dict(r)) for r in rows]
+    except sqlite3.OperationalError:
+        results = []
+    finally:
+        conn.close()
+    return results
+
+
+def _code_search(query: str, limit: int = 15) -> list[FileResult]:
+    shards = get_all_shard_paths()
+    if not shards: return []
+    all_results = []
+    futures = [_shard_executor.submit(_code_search_single, p, query, limit) for p in shards]
+    for f in concurrent.futures.as_completed(futures):
+        all_results.extend(f.result())
+    return all_results[:limit]
+
+def _code_search_single(db_path: Path, query: str, limit: int = 15) -> list[FileResult]:
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
+    
+    clean_atoms = []
+    for a in query.replace('"', '').split():
+        if a.strip():
+            clean_atoms.append(f'"{a.strip()}"')
+            
+    if not clean_atoms:
+        conn.close()
+        return []
+    
+    match_query = " OR ".join(clean_atoms)
+    
+    query_str = """
+        SELECT files.path, files.name, files.extension, files.size, files.mtime 
+        FROM code_symbols 
+        JOIN files ON files.path = code_symbols.path 
+        WHERE code_symbols MATCH ? AND files.size > 0
+    """
+    if not get_show_hidden():
+        query_str += " AND files.name NOT LIKE '.%'"
+        
+    query_str += " ORDER BY bm25(code_symbols) LIMIT ?"
+    
+    try:
+        rows = conn.execute(query_str, [match_query, limit]).fetchall()
         results = [FileResult(**dict(r)) for r in rows]
     except sqlite3.OperationalError:
         results = []
@@ -1030,6 +1087,12 @@ def quick_search(query: str, limit: int = 15) -> list[FileResult]:
 
 def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     stripped = query.strip()
+    
+    try:
+        from audit import log_action
+        log_action("SEARCH", f"Query: {query}, Limit: {limit}")
+    except Exception:
+        pass
 
     cached = _cache_get(stripped)
     if cached:
@@ -1112,7 +1175,6 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     if explicit_exts:
         stripped = " ".join(new_words)
 
-    # 0b. Explicit content: syntax
     content_query, stripped = _extract_content_filter(stripped)
     if content_query and not stripped:
         results = _content_search(content_query, limit)
@@ -1121,6 +1183,11 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     tag_query, stripped = _extract_tag_filter(stripped)
     if tag_query and not stripped:
         results = _tag_search(tag_query, limit)
+        return _filter_and_clean(results), False
+        
+    code_query, stripped = _extract_code_filter(stripped)
+    if code_query and not stripped:
+        results = _code_search(code_query, limit)
         return _filter_and_clean(results), False
 
     # 0b. Explicit type: syntax (#18) — e.g. "type:image rupendra"
@@ -1218,6 +1285,10 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     elif len(stripped.split()) > 1:
         content_results = _content_search(stripped, limit)
         
+    code_results = []
+    if code_query:
+        code_results = _code_search(code_query, limit)
+        
     semantic_results = []
     if semantic_future:
         try:
@@ -1225,8 +1296,8 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
         except Exception:
             pass
         
-    if semantic_results or content_results:
-        fused = _rrf_fusion(atoms, keyword_results, semantic_results, content_results, requested_extensions=extensions)
+    if semantic_results or content_results or code_results:
+        fused = _rrf_fusion(atoms, keyword_results, semantic_results, content_results, code_results, requested_extensions=extensions)
         if fused:
             return fused, False
             

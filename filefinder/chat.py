@@ -379,6 +379,12 @@ def open_result(idx: int) -> None:
             record_open(_last_query, path)
         except ImportError:
             pass
+            
+        try:
+            from audit import log_action
+            log_action("OPEN_CLI", f"Path: {path}, Source Query: {_last_query}")
+        except Exception:
+            pass
     except FileNotFoundError:
         console.print("[red]xdg-open not found.[/red]")
 

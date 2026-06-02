@@ -62,6 +62,12 @@ def api_open():
     except ImportError:
         pass
         
+    try:
+        from audit import log_action
+        log_action("OPEN_GUI", f"Path: {path}, Source Query: {query}")
+    except Exception:
+        pass
+        
     return jsonify({"ok": True})
 
 @app.route("/api/preview")

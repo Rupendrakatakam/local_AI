@@ -654,6 +654,11 @@
             data.results.forEach((r, idx) => {
                 const tr = document.createElement('tr');
                 tr.onclick = () => selectResult(idx);
+                tr.draggable = true;
+                tr.ondragstart = (e) => {
+                    e.dataTransfer.setData('text/plain', r.path);
+                    e.dataTransfer.setData('DownloadURL', `application/octet-stream:${r.name}:file://${r.path}`);
+                };
                 
                 // Confidence Bar (Update 59)
                 let confClass = 'conf-low';

@@ -127,4 +127,12 @@ def init_shard(conn) -> None:
         )
     """)
     
+    # Feature 1.1 table: Code symbols
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS code_symbols USING fts5(
+            symbol, path, type,
+            tokenize='unicode61 separators "_-."'
+        )
+    """)
+    
     conn.commit()
