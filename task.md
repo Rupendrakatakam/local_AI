@@ -24,79 +24,79 @@
     - [x] Update 19: Handle is_fuzzy flag in display (tuple unpacking bug first)
     - [x] Update 20: One-time FTS5 rebuild for existing DBs
 
-- [ ] **Phase 2: Semantic & Multimodal**
-  - [ ] **Batch 2A: Embedding Pipeline**
-    - [ ] Update 21: embedder.py module scaffold
-    - [ ] Update 22: LanceDB schema + table creation
-    - [ ] Update 23: Text extractor — plain text files
-    - [ ] Update 24: Text extractor — PDF (pymupdf)
-    - [ ] Update 25: Text extractor — DOCX (mammoth)
-    - [ ] Update 26: Chunker function
-    - [ ] Update 27: MiniLM batch embedder
-    - [ ] Update 28: LanceDB upsert function
-    - [ ] Update 29: Background embedding worker
-    - [ ] Update 30: Embedding queue integration in indexer
-  - [ ] **Batch 2B: Search Fusion & Extras**
-    - [ ] Update 31: Semantic search function
-    - [ ] Update 32: RRF hybrid fusion
-    - [ ] Update 33: Query router — keyword vs semantic
-    - [ ] Update 34: CLIP model loader
-    - [ ] Update 35: Image embedding function
-    - [ ] Update 36: OCR worker for scanned PDFs
-    - [ ] Update 37: Embedding progress tracker
-    - [ ] Update 38: Semantic search status in stats
+- [x] **Phase 2: Semantic & Multimodal**
+  - [x] **Batch 2A: Embedding Pipeline**
+    - [x] Update 21: embedder.py module scaffold
+    - [x] Update 22: LanceDB schema + table creation
+    - [x] Update 23: Text extractor — plain text files
+    - [x] Update 24: Text extractor — PDF (pymupdf)
+    - [x] Update 25: Text extractor — DOCX (mammoth)
+    - [x] Update 26: Chunker function
+    - [x] Update 27: MiniLM batch embedder
+    - [x] Update 28: LanceDB upsert function
+    - [x] Update 29: Background embedding worker
+    - [x] Update 30: Embedding queue integration in indexer
+  - [x] **Batch 2B: Search Fusion & Extras**
+    - [x] Update 31: Semantic search function
+    - [x] Update 32: RRF hybrid fusion
+    - [x] Update 33: Query router — keyword vs semantic
+    - [x] Update 34: CLIP model loader
+    - [x] Update 35: Image embedding function
+    - [x] Update 36: OCR worker for scanned PDFs
+    - [x] Update 37: Embedding progress tracker
+    - [x] Update 38: Semantic search status in stats
 
-- [ ] **Phase 3: Behavioral & Autonomy**
-  - [ ] **Batch 3A: Behavior Tracking**
-    - [ ] Update 39: behavior.db schema
-    - [ ] Update 40: Record open events
-    - [ ] Update 41: Record copy events
-    - [ ] Update 42: RFM score calculator
-    - [ ] Update 43: Workspace affinity tracker
-    - [ ] Update 44: Integrate RFM boost into _score_result
-    - [ ] Update 45: Time-of-day pattern detector
-  - [ ] **Batch 3B: Smart Suggestions**
-    - [ ] Update 46: Query suggestion from history
-    - [ ] Update 47: Auto-alias system
-    - [ ] Update 48: /alias command
-    - [ ] Update 49: Alias lookup in search()
-    - [ ] Update 50: Weekly index health report
-    - [ ] Add `/privacy clear` command to wipe behavior.db (approved requirement)
+- [x] **Phase 3: Behavioral & Autonomy**
+  - [x] **Batch 3A: Behavior Tracking**
+    - [x] Update 39: behavior.db schema
+    - [x] Update 40: Record open events
+    - [x] Update 41: Record copy events
+    - [x] Update 42: RFM score calculator
+    - [x] Update 43: Workspace affinity tracker
+    - [x] Update 44: Integrate RFM boost into _score_result
+    - [x] Update 45: Time-of-day pattern detector
+  - [x] **Batch 3B: Smart Suggestions**
+    - [x] Update 46: Query suggestion from history
+    - [x] Update 47: Auto-alias system
+    - [x] Update 48: /alias command
+    - [x] Update 49: Alias lookup in search()
+    - [x] Update 50: Weekly index health report
+    - [x] Add `/privacy clear` command to wipe behavior.db (approved requirement)
 
-- [ ] **Phase 4: GUI & UX Surface**
-  - [ ] **Batch 4A: Flask Backend + React Shell**
-    - [ ] Update 51: gui.py Flask backend scaffold
-    - [ ] Update 52: Flask /search endpoint
-    - [ ] Update 53: Flask /open endpoint
-    - [ ] Update 54: Flask /preview endpoint
-    - [ ] Update 55: React app scaffold (index.html)
-    - [ ] Update 56: Search bar component
-    - [ ] Update 57: Results table component
-    - [ ] Update 58: File type icon set
-  - [ ] **Batch 4B: Preview + Polish**
-    - [ ] Update 59: Confidence score bar
-    - [ ] Update 60: Preview panel — text snippet
-    - [ ] Update 61: Preview panel — image thumbnail
-    - [ ] Update 62: Preview panel — PDF first page
-    - [ ] Update 63: Keyboard shortcut system
-    - [ ] Update 64: System tray icon (pystray)
-    - [ ] Update 65: App launcher script
-    - [ ] Update 66: Dark/light mode toggle
-    - [ ] Update 67: GUI stats dashboard
+- [x] **Phase 4: GUI & UX Surface**
+  - [x] **Batch 4A: Flask Backend + React Shell**
+    - [x] Update 51: gui.py Flask backend scaffold
+    - [x] Update 52: Flask /search endpoint
+    - [x] Update 53: Flask /open endpoint
+    - [x] Update 54: Flask /preview endpoint
+    - [x] Update 55: React app scaffold (index.html)
+    - [x] Update 56: Search bar component
+    - [x] Update 57: Results table component
+    - [x] Update 58: File type icon set
+  - [x] **Batch 4B: Preview + Polish**
+    - [x] Update 59: Confidence score bar
+    - [x] Update 60: Preview panel — text snippet
+    - [x] Update 61: Preview panel — image thumbnail
+    - [x] Update 62: Preview panel — PDF first page
+    - [x] Update 63: Keyboard shortcut system
+    - [x] Update 64: System tray icon (pystray)
+    - [x] Update 65: App launcher script
+    - [x] Update 66: Dark/light mode toggle
+    - [x] Update 67: GUI stats dashboard
 
-- [ ] **Phase 5: Stability & Hardening**
-  - [ ] **Batch 5A: Performance & Safety**
-    - [ ] Update 68: WAL checkpoint optimization
-    - [ ] Update 69: SQLite connection pooling
-    - [ ] Update 70: Query result cache
-    - [ ] Update 71: DB integrity check on startup
-    - [ ] Update 72: Graceful shutdown
-    - [ ] Update 73: Fuzzy cache memory limit
-    - [ ] Update 74: Ollama rate limiter
-    - [ ] Update 75: Max file size filter
-  - [ ] **Batch 5B: Tooling & Config**
-    - [ ] Update 76: /rebuild command
-    - [ ] Update 77: setup.sh deps install update
-    - [ ] Update 78: Indexer memory cap
-    - [ ] Update 79: filefinder-doctor CLI
-    - [ ] Update 80: config.json centralized settings
+- [x] **Phase 5: Stability & Hardening**
+  - [x] **Batch 5A: Performance & Safety**
+    - [x] Update 68: WAL checkpoint optimization
+    - [x] Update 69: SQLite connection pooling
+    - [x] Update 70: Query result cache
+    - [x] Update 71: DB integrity check on startup
+    - [x] Update 72: Graceful shutdown
+    - [x] Update 73: Fuzzy cache memory limit
+    - [x] Update 74: Ollama rate limiter
+    - [x] Update 75: Max file size filter
+  - [x] **Batch 5B: Tooling & Config**
+    - [x] Update 76: /rebuild command
+    - [x] Update 77: setup.sh deps install update
+    - [x] Update 78: Indexer memory cap
+    - [x] Update 79: filefinder-doctor CLI
+    - [x] Update 80: config.json centralized settings
