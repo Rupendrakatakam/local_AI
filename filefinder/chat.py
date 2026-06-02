@@ -406,6 +406,12 @@ def copy_result(idx: int) -> None:
                     record_copy(path)
                 except ImportError:
                     pass
+                
+                try:
+                    from audit import log_action
+                    log_action("COPY_CLI", f"Path: {path}")
+                except Exception:
+                    pass
                 return
         except FileNotFoundError:
             continue

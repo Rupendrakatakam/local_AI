@@ -7,10 +7,41 @@ import subprocess
 import mimetypes
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_file
+from flask_socketio import SocketIO
 from search import search, db_stats, FileResult
 from config_loader import get as cfg
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+@socketio.on('search')
+def handle_ws_search(data):
+    q = data.get("q", "").strip()
+    limit = int(data.get("limit", 50))
+    if not q:
+        socketio.emit('search_result', {"results": [], "is_fuzzy": False, "status": "done"})
+        return
+        
+    socketio.emit('search_status', {"status": "searching"})
+    results, is_fuzzy = search(q, limit)
+    
+    formatted = [
+        {
+            "path": r.path, 
+            "name": r.name, 
+            "extension": r.extension,
+            "size": r.size, 
+            "size_human": r.size_human, 
+            "mtime": r.mtime
+        }
+        for r in results
+    ]
+    
+    socketio.emit('search_result', {
+        "results": formatted,
+        "is_fuzzy": is_fuzzy,
+        "status": "done"
+    })
 
 @app.route("/")
 def index():
@@ -214,6 +245,47 @@ def api_stats():
         
     return jsonify(result)
 
+@app.route("/api/stats/storage")
+def api_stats_storage():
+    try:
+        from db_utils import get_all_shard_paths
+        import sqlite3
+        
+        shards = get_all_shard_paths()
+        ext_stats = {}
+        total_size = 0
+        
+        for db_path in shards:
+            try:
+                conn = sqlite3.connect(db_path)
+                cur = conn.execute("SELECT extension, sum(size) FROM files WHERE size > 0 GROUP BY extension")
+                for ext, size in cur.fetchall():
+                    ext = ext or "unknown"
+                    ext_stats[ext] = ext_stats.get(ext, 0) + size
+                    total_size += size
+                conn.close()
+            except Exception:
+                pass
+                
+        # Get top 10 extensions by size
+        sorted_exts = sorted(ext_stats.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        labels = [x[0] for x in sorted_exts]
+        sizes = [x[1] for x in sorted_exts]
+        
+        # Calculate 'Other'
+        top_size = sum(sizes)
+        if total_size > top_size:
+            labels.append("other")
+            sizes.append(total_size - top_size)
+            
+        return jsonify({
+            "labels": labels,
+            "sizes": sizes
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/smart_folders")
 def api_smart_folders():
     try:
@@ -265,9 +337,106 @@ def api_smart_folders():
         resp.raise_for_status()
         
         suggestion = resp.json().get("response", "").strip()
-        import markdown
-        html_suggestion = markdown.markdown(suggestion)
+        try:
+            import markdown
+            html_suggestion = markdown.markdown(suggestion)
+        except ImportError:
+            html_suggestion = f"<pre>{suggestion}</pre>"
+            
         return jsonify({"suggestion": html_suggestion})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/organize", methods=["POST"])
+def api_organize():
+    try:
+        import sys
+        from pathlib import Path
+        agents_dir = str(Path(__file__).parent / "agents")
+        if agents_dir not in sys.path:
+            sys.path.append(agents_dir)
+            
+        from org_agent import OrganizationAgent
+        agent = OrganizationAgent()
+        
+        data = request.json
+        folder = data.get("folder")
+        if not folder:
+            return jsonify({"error": "Folder required"}), 400
+            
+        action = data.get("action", "plan")
+        
+        if action == "plan":
+            plan = agent.generate_plan(folder)
+            return jsonify(plan)
+            
+        elif action == "execute":
+            moves = data.get("moves", [])
+            success = agent.execute_plan(moves)
+            return jsonify({"success": success})
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/organize/undo", methods=["POST"])
+def api_organize_undo():
+    try:
+        import sys
+        from pathlib import Path
+        agents_dir = str(Path(__file__).parent / "agents")
+        if agents_dir not in sys.path:
+            sys.path.append(agents_dir)
+            
+        from org_agent import OrganizationAgent
+        agent = OrganizationAgent()
+        
+        success = agent.undo_last()
+        return jsonify({"success": success})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/predictions")
+def api_predictions():
+    try:
+        from predictor import AccessPredictor
+        predictor = AccessPredictor()
+        predictions = predictor.predict_likely_files()
+        return jsonify({"predictions": predictions})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/briefing")
+def api_briefing():
+    try:
+        from briefing import generate_morning_briefing
+        briefing = generate_morning_briefing()
+        import markdown
+        html_briefing = markdown.markdown(briefing)
+        return jsonify({"briefing": html_briefing})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/graph/related")
+def api_graph_related():
+    try:
+        from knowledge_graph import KnowledgeGraph
+        path = request.args.get("path")
+        if not path:
+            return jsonify({"error": "Path required"}), 400
+        
+        kg = KnowledgeGraph()
+        related = kg.find_related(path)
+        return jsonify({"related": related})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/graph/rebuild", methods=["POST"])
+def api_graph_rebuild():
+    try:
+        from knowledge_graph import KnowledgeGraph
+        kg = KnowledgeGraph()
+        kg.build_graph()
+        return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -313,12 +482,45 @@ def api_chat():
         from behavior import get_behavior_db
         import requests
         import datetime
+        from config_loader import get as cfg
+        import sys
+        from pathlib import Path
+        
+        # Ensure agents dir is in path
+        agents_dir = str(Path(__file__).parent / "agents")
+        if agents_dir not in sys.path:
+            sys.path.append(agents_dir)
+            
+        try:
+            from file_agent import FileIntelligenceAgent
+            agent = FileIntelligenceAgent()
+        except ImportError:
+            agent = None
         
         user_message = request.json.get("message", "").strip()
         if not user_message:
             return jsonify({"error": "Empty message"}), 400
             
-        # Get recent context
+        if agent:
+            start_ts, end_ts = agent.parse_time_reference(user_message)
+            # Fetch recent activity within time bounds
+            paths = agent.query_recent_activity(start_ts, end_ts)
+            
+            # If there's a strong time reference and paths, generate agent summary
+            time_keywords = ["yesterday", "this morning", "this week", "today"]
+            if any(k in user_message.lower() for k in time_keywords) and paths:
+                grouped = agent.group_by_project(paths)
+                reply = agent.generate_summary(grouped)
+                
+                # Wrap paths in backticks for UI to render links
+                for p in paths:
+                    reply = reply.replace(Path(p).name, f"`{p}`")
+                    
+                import markdown
+                html_reply = markdown.markdown(reply)
+                return jsonify({"reply": html_reply})
+            
+        # Fallback to standard context (for general questions)
         conn = get_behavior_db()
         
         # Recent opens
@@ -354,7 +556,7 @@ Do not make up file paths that are not in the context. Keep your response conver
 Context:
 {context_str}
 
-User Message: {user_message}"""
+User Question: {user_message}"""
 
         OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
         MODEL = cfg("ollama_model", "phi3:mini")
@@ -364,14 +566,34 @@ User Message: {user_message}"""
         
         reply = resp.json().get("response", "").strip()
         
-        import markdown
-        # Custom markdown extension or simple regex to convert backticks to actionable links is handled in JS
-        html_reply = markdown.markdown(reply)
+        try:
+            import markdown
+            # Custom markdown extension or simple regex to convert backticks to actionable links is handled in JS
+            html_reply = markdown.markdown(reply)
+        except ImportError:
+            html_reply = f"<pre>{reply}</pre>"
         
         return jsonify({"reply": html_reply})
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/aliases", methods=["GET", "POST", "DELETE"])
+def api_aliases():
+    try:
+        from aliases import list_aliases, set_alias, remove_alias
+        if request.method == "GET":
+            return jsonify({"aliases": list_aliases()})
+        elif request.method == "POST":
+            data = request.json
+            set_alias(data["name"], data["path"])
+            return jsonify({"success": True})
+        elif request.method == "DELETE":
+            name = request.args.get("name")
+            remove_alias(name)
+            return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(cfg("gui_port", 5000)), debug=True)
+    socketio.run(app, host="127.0.0.1", port=int(cfg("gui_port", 5000)), debug=True, allow_unsafe_werkzeug=True)

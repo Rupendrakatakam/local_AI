@@ -14,6 +14,7 @@
     "gui_port": 5000,
     "vacuum_every": 5000,
     "wal_checkpoint_interval": 300,
+    "backup_interval_hours": 168,
     "debounce_sec": 0.5,
     "cpu_load_cap": 2.0,
     "ollama_rate_limit_ms": 100,

@@ -1,0 +1,8 @@
+[Unit]
+Description=FileChat Backup Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/Rupendra/local_AI/filefinder/backup.py
+WorkingDirectory=%h/Rupendra/local_AI/filefinder

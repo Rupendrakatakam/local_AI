@@ -210,23 +210,69 @@ def _compute_file_hash(path: Path, size: int) -> str:
         pass
     return hasher.hexdigest()
 
-def _extract_code_symbols(path: Path) -> list[tuple[str, str]]:
-    """Feature 1.1: Extract class and function names from Python files."""
-    if path.suffix != ".py":
-        return []
+def _extract_symbols_treesitter(path: Path) -> list[tuple[str, str]]:
+    """Feature B1: Extract symbols using tree-sitter, fallback to AST for Python."""
     try:
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        symbols = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                symbols.append((node.name, "class"))
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                symbols.append((node.name, "function"))
-        return symbols
-    except Exception:
-        return []
+        import tree_sitter
+        from tree_sitter import Parser
+    except ImportError:
+        # Fallback to AST for Python
+        if path.suffix != ".py": return []
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            return [(n.name, "class") if isinstance(n, ast.ClassDef) else (n.name, "function") 
+                    for n in ast.walk(tree) if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+        except Exception:
+            return []
 
+    ext_map = {
+        ".py": ("tree_sitter_python", "language", ["function_definition", "class_definition"]),
+        ".js": ("tree_sitter_javascript", "language", ["function_declaration", "class_declaration"]),
+        ".ts": ("tree_sitter_typescript", "language_typescript", ["function_declaration", "class_declaration"]),
+        ".c": ("tree_sitter_c", "language", ["function_definition"]),
+        ".cpp": ("tree_sitter_c", "language", ["function_definition", "class_specifier"]),
+        ".rs": ("tree_sitter_rust", "language", ["function_item", "struct_item", "impl_item"]),
+        ".go": ("tree_sitter_go", "language", ["function_declaration", "method_declaration"]),
+        ".java": ("tree_sitter_java", "language", ["method_declaration", "class_declaration"]),
+    }
+    
+    if path.suffix not in ext_map:
+        return []
+        
+    pkg, lang_func, query_types = ext_map[path.suffix]
+    try:
+        lang_module = __import__(pkg)
+        lang = tree_sitter.Language(getattr(lang_module, lang_func)())
+        parser = Parser()
+        parser.set_language(lang)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        
+        symbols = []
+        def traverse(node):
+            if node.type in query_types:
+                for child in node.children:
+                    if child.type == "identifier" or child.type == "name":
+                        sym_type = "function" if "function" in node.type or "method" in node.type else "class"
+                        symbols.append((child.text.decode('utf8'), sym_type))
+                        break
+            for child in node.children:
+                traverse(child)
+                
+        traverse(tree.root_node)
+        return symbols
+    except Exception as e:
+        # Fallback to AST for Python if tree-sitter fails
+        if path.suffix == ".py":
+            try:
+                source_txt = path.read_text(encoding="utf-8")
+                tree_ast = ast.parse(source_txt)
+                return [(n.name, "class") if isinstance(n, ast.ClassDef) else (n.name, "function") 
+                        for n in ast.walk(tree_ast) if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+            except Exception:
+                pass
+        return []
 
 def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
     try:
@@ -284,8 +330,8 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
                          
             # Feature 1.1: Code symbols
             conn.execute("DELETE FROM code_symbols WHERE path = ?", (str(p),))
-            if p.suffix == ".py":
-                symbols = _extract_code_symbols(p)
+            if p.suffix in {'.py', '.js', '.ts', '.c', '.cpp', '.rs', '.go', '.java'}:
+                symbols = _extract_symbols_treesitter(p)
                 if symbols:
                     conn.executemany("INSERT INTO code_symbols (symbol, path, type) VALUES (?, ?, ?)",
                                      [(sym[0], str(p), sym[1]) for sym in symbols])
@@ -499,6 +545,27 @@ if __name__ == "__main__":
 
     # Update 68: Start WAL checkpoint thread
     threading.Thread(target=_wal_checkpoint_loop, daemon=True).start()
+    
+    # Feature B3: Background Reranker Training
+    try:
+        from reranker import train_reranker_background
+        train_reranker_background()
+    except Exception:
+        pass
+
+    def _backup_thread():
+        import backup
+        interval_hours = float(cfg("backup_interval_hours", 168))
+        interval_seconds = interval_hours * 3600
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                log.info("Starting automated backup...")
+                backup.perform_backup()
+            except Exception as e:
+                log.error("Automated backup failed: %s", e)
+
+    threading.Thread(target=_backup_thread, daemon=True).start()
 
     try:
         while True:

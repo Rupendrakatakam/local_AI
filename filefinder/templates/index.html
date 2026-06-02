@@ -13,6 +13,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style>
         :root {
             /* Dark Mode (Default) */
@@ -445,6 +447,10 @@
     <header>
         <h1>FileChat</h1>
         <div class="controls">
+            <button class="icon-btn" onclick="switchTab('searchTab')">🔍 Search</button>
+            <button class="icon-btn" onclick="switchTab('graphTab')">🕸 Graph</button>
+            <button class="icon-btn" id="btn-aliases" onclick="openAliases()">🏷️ Aliases</button>
+            <button class="icon-btn" onclick="openAnalytics()">📈 Analytics</button>
             <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">📁 Smart Folders</button>
             <button class="icon-btn" id="btn-chat" onclick="openChat()">💬 Chat Assistant</button>
             <button class="icon-btn" id="btn-duplicates" onclick="fetchDuplicates()">🔍 Find Duplicates</button>
@@ -460,28 +466,53 @@
     </header>
 
     <div class="container">
-        <div class="search-panel">
+        <div id="searchTab" class="tab-content">
             <div class="search-box">
                 <input type="text" id="searchInput" placeholder="Search files, contents, or use /alias..." autocomplete="off">
                 <div class="shortcut-hint">/</div>
             </div>
             <div class="status-bar" id="statusBar">Ready. Type to search.</div>
             
-            <div class="results-container">
-                <table>
+            <div id="briefingContainer" style="display: none; background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--accent-green); padding: 15px; margin: 20px 0; border-radius: 4px; position: relative;">
+                <button onclick="document.getElementById('briefingContainer').style.display='none'" style="position: absolute; right: 10px; top: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer;">✕</button>
+                <h3 style="margin-top: 0; color: var(--accent-green);">🌅 Good Morning</h3>
+                <div id="briefingContent" style="color: var(--text); line-height: 1.5; font-size: 14px;"></div>
+            </div>
+            
+            <table class="results-table" id="resultsTable">
                     <thead>
                         <tr>
-                            <th style="width: 45%;">Name</th>
-                            <th style="width: 35%;">Path</th>
-                            <th style="width: 10%;">Size</th>
-                            <th style="width: 10%;">Date</th>
+                            <th style="width: 40px;"></th>
+                            <th>Name</th>
+                            <th>Path</th>
+                            <th style="width: 100px;">Size</th>
+                            <th style="width: 150px;">Modified</th>
                         </tr>
                     </thead>
                     <tbody id="resultsBody">
-                        <!-- Rows populated by JS -->
+                        <!-- Results will go here -->
                     </tbody>
                 </table>
+                
+                <div id="predictionsContainer" style="margin-top: 30px; display: none;">
+                    <h3 style="color: var(--accent-cyan); border-bottom: 1px solid var(--border); padding-bottom: 10px;">Predicted Files for You</h3>
+                    <div id="predictionsList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-top: 15px;"></div>
+                </div>
             </div>
+        </div>
+
+        <!-- Graph Tab -->
+        <div id="graphTab" class="tab-content" style="display: none;">
+            <div class="dashboard-header">
+                <h2>Knowledge Graph</h2>
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="graphSearchInput" placeholder="Search node to center..." style="width: 300px;">
+                    <button class="btn" onclick="rebuildGraph()">Rebuild Graph</button>
+                </div>
+            </div>
+            
+            <div id="graphContainer" style="width: 100%; height: calc(100vh - 120px); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-dark);"></div>
         </div>
 
         <div class="preview-panel" id="previewPanel">
@@ -550,6 +581,34 @@
         </div>
     </div>
 
+    <!-- Aliases Modal -->
+    <div class="modal-overlay" id="aliasesModal" onclick="if(event.target===this) closeAliases()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Manage Aliases</h2>
+                <button class="icon-btn" onclick="closeAliases()" style="border:none;">✕</button>
+            </div>
+            
+            <form id="addAliasForm" onsubmit="addAlias(event)" style="display: flex; gap: 8px; margin-bottom: 24px;">
+                <input type="text" id="aliasNameInput" class="chat-input" placeholder="Alias Name (e.g. docs)" required style="flex: 1; min-width: 150px;">
+                <input type="text" id="aliasPathInput" class="chat-input" placeholder="Target Path (/path/to/file_or_dir)" required style="flex: 2;">
+                <button type="submit" style="background: var(--accent-cyan); color: #000; border: none; padding: 0 20px; border-radius: 20px; font-weight: 600; cursor: pointer;">Add</button>
+            </form>
+            
+            <table style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th style="width: 25%">Name</th>
+                        <th style="width: 60%">Target Path</th>
+                        <th style="width: 15%; text-align: right;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="aliasesListBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- Analytics Modal -->
     <div class="modal-overlay" id="analyticsModal" onclick="if(event.target===this) closeAnalytics()">
         <div class="modal-content">
@@ -573,6 +632,13 @@
                     <ul class="analytics-list" id="topFilesList"></ul>
                 </div>
             </div>
+            
+            <div class="analytics-card" style="margin-bottom: 24px; text-align: center;">
+                <h3>Storage Breakdown</h3>
+                <div style="width: 250px; height: 250px; margin: 0 auto;">
+                    <canvas id="storageChart"></canvas>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -586,9 +652,140 @@
         const previewContent = document.getElementById('previewContent');
         const btnOpenSelected = document.getElementById('btnOpenSelected');
 
-        let currentResults = [];
+        let searchTimeout;
+        let lastQuery = '';
         let selectedIndex = -1;
-        let searchTimeout = null;
+        let fileResults = [];
+        let network = null;
+
+        // Fetch predictions on load
+        async function fetchPredictions() {
+            try {
+                const res = await fetch('/api/predictions');
+                const data = await res.json();
+                
+                if (data.predictions && data.predictions.length > 0) {
+                    const container = document.getElementById('predictionsContainer');
+                    const list = document.getElementById('predictionsList');
+                    
+                    list.innerHTML = data.predictions.map(p => {
+                        const name = p.path.split('/').pop() || p.path;
+                        const confPercent = Math.round(p.confidence * 100);
+                        return `
+                            <div class="analytics-card" style="cursor: pointer; padding: 15px;" onclick="openFile('\${p.path.replace(/'/g, "\\'")}')">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                    <strong style="color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80%;">\${escapeHtml(name)}</strong>
+                                    <span style="font-size: 0.8em; color: \${p.confidence > 0.8 ? 'var(--accent-green)' : 'var(--accent-orange)'};">\${confPercent}% likely</span>
+                                </div>
+                                <div style="font-size: 0.8em; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    \${escapeHtml(p.path)}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    container.style.display = 'block';
+                }
+            } catch (e) {
+                console.error("Failed to fetch predictions", e);
+            }
+        }
+        
+        async function fetchBriefing() {
+            try {
+                const res = await fetch('/api/briefing');
+                const data = await res.json();
+                if (data.briefing) {
+                    document.getElementById('briefingContent').innerHTML = data.briefing;
+                    document.getElementById('briefingContainer').style.display = 'block';
+                }
+            } catch (e) {
+                console.error("Failed to fetch briefing", e);
+            }
+        }
+        
+        // Refresh predictions every 30 mins
+        setInterval(fetchPredictions, 30 * 60 * 1000);
+        
+        // Initial load
+        window.addEventListener('DOMContentLoaded', () => {
+            fetchStatsHealth();
+            fetchPredictions();
+            fetchBriefing();
+            
+            // Reconnect websocket
+            socket.on('connect', () => {
+                const status = document.getElementById('statusText');
+                if (status) {
+                    status.textContent = 'Ready (Real-time)';
+                    status.style.color = '#10b981';
+                }
+            });
+            
+            // Initialize graph empty
+            initGraph();
+        });
+
+        // Graph functions
+        function initGraph() {
+            const container = document.getElementById('graphContainer');
+            const data = { nodes: new vis.DataSet([]), edges: new vis.DataSet([]) };
+            const options = {
+                nodes: { shape: 'dot', size: 16, font: { color: '#ffffff' } },
+                edges: { width: 2, color: '#666666' },
+                physics: { stabilization: false, barnesHut: { gravitationalConstant: -80000, springConstant: 0.001, springLength: 200 } }
+            };
+            network = new vis.Network(container, data, options);
+            
+            network.on("click", function (params) {
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    if (nodeId.startsWith('/')) {
+                        openFile(nodeId);
+                    }
+                    // Fetch related to expand
+                    fetchGraphData(nodeId);
+                }
+            });
+        }
+        
+        async function fetchGraphData(path) {
+            try {
+                const res = await fetch(`/api/graph/related?path=${encodeURIComponent(path)}`);
+                const data = await res.json();
+                if (data.related) {
+                    const nodes = new vis.DataSet();
+                    const edges = new vis.DataSet();
+                    
+                    // Add center node
+                    nodes.add({id: path, label: path.split('/').pop() || path, color: '#3b82f6'});
+                    
+                    data.related.forEach(r => {
+                        try { nodes.add({id: r.node, label: r.node.split('/').pop() || r.node, color: r.edge_type === 'contains_entity' ? '#f59e0b' : '#10b981'}); } catch(e) {}
+                        try { edges.add({from: path, to: r.node, label: r.edge_type, font: {align: 'middle'}}); } catch(e) {}
+                    });
+                    
+                    network.setData({nodes, edges});
+                }
+            } catch (e) {
+                console.error("Failed to load graph", e);
+            }
+        }
+        
+        async function rebuildGraph() {
+            try {
+                await fetch('/api/graph/rebuild', {method: 'POST'});
+                alert("Graph rebuild triggered.");
+            } catch (e) {}
+        }
+        
+        // Search centering
+        document.getElementById('graphSearchInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const query = e.target.value.trim();
+                if (query) fetchGraphData(query);
+            }
+        });
 
         // Icons map
         const ICONS = {
@@ -608,6 +805,14 @@
         }
 
         // Dark/Light Theme (Update 66)
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+            document.getElementById(tabId).style.display = 'block';
+            if (tabId === 'graphTab') {
+                if (!network) initGraph();
+            }
+        }
+
         function setTheme(theme) {
             document.documentElement.setAttribute('data-theme', theme);
             localStorage.setItem('theme', theme);
@@ -616,10 +821,19 @@
         }
         
         // Initialize theme
-        const savedTheme = localStorage.getItem('theme') || 'dark';
-        setTheme(savedTheme);
-
-        // Search API Call
+        let isAiMode = false;
+        let socket;
+        if (typeof io !== 'undefined') {
+            socket = io();
+            socket.on('search_result', (data) => {
+                currentResults = data.results;
+                renderResults(data);
+                statusBar.textContent = `Found ${currentResults.length} results ${data.is_fuzzy ? '(Fuzzy Match)' : ''}`;
+            });
+            socket.on('search_status', (data) => {
+                statusBar.textContent = data.status === 'searching' ? 'Searching...' : data.status;
+            });
+        }
         async function performSearch(query) {
             if (!query) {
                 resultsBody.innerHTML = '';
@@ -630,14 +844,18 @@
             }
 
             statusBar.textContent = 'Searching...';
-            try {
-                const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-                const data = await res.json();
-                currentResults = data.results;
-                renderResults(data);
-                statusBar.textContent = `Found ${currentResults.length} results ${data.is_fuzzy ? '(Fuzzy Match)' : ''}`;
-            } catch (e) {
-                statusBar.textContent = `Error: ${e.message}`;
+            if (socket && socket.connected) {
+                socket.emit('search', { q: query, limit: 50 });
+            } else {
+                try {
+                    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    const data = await res.json();
+                    currentResults = data.results;
+                    renderResults(data);
+                    statusBar.textContent = `Found ${currentResults.length} results ${data.is_fuzzy ? '(Fuzzy Match)' : ''}`;
+                } catch (e) {
+                    statusBar.textContent = `Error: ${e.message}`;
+                }
             }
         }
 
@@ -949,7 +1167,7 @@
                     return `<li><span class="analytics-item-name" title="${escapeHtml(f.path)}">${escapeHtml(name)}</span> <span class="analytics-item-count">${f.count}</span></li>`;
                 }).join('') || '<li>No data yet</li>';
 
-                // Render Chart
+                // Render Hourly Chart
                 const ctx = document.getElementById('hourlyChart').getContext('2d');
                 if (hourlyChartInstance) hourlyChartInstance.destroy();
                 
@@ -975,10 +1193,52 @@
                         }
                     }
                 });
-
+                
+                // Fetch and Render Storage Chart
+                const storageRes = await fetch('/api/stats/storage');
+                const storageData = await storageRes.json();
+                
+                if (!storageData.error) {
+                    const sCtx = document.getElementById('storageChart').getContext('2d');
+                    if (storageChartInstance) storageChartInstance.destroy();
+                    
+                    const colors = [
+                        '#00e5ff', '#b39ddb', '#10b981', '#f59e0b', '#ef4444', 
+                        '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#64748b'
+                    ];
+                    
+                    storageChartInstance = new Chart(sCtx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: storageData.labels,
+                            datasets: [{
+                                data: storageData.sizes,
+                                backgroundColor: colors,
+                                borderWidth: 0
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'right', labels: { color: '#94a3b8' } },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const mb = (context.raw / (1024 * 1024)).toFixed(2);
+                                            return ` ${context.label}: ${mb} MB`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                
                 document.getElementById('analyticsModal').style.display = 'flex';
             } catch (e) {
-                alert(`Analytics error: ${e.message}`);
+                console.error("Error fetching analytics:", e);
+                alert("Failed to load analytics");
             }
         }
 
@@ -1028,6 +1288,72 @@
                 openFile(currentResults[selectedIndex].path, searchInput.value);
             }
         });
+        // Aliases Modal Logic
+        function openAliases() {
+            document.getElementById('aliasesModal').classList.add('active');
+            fetchAliases();
+        }
+
+        function closeAliases() {
+            document.getElementById('aliasesModal').classList.remove('active');
+        }
+
+        async function fetchAliases() {
+            try {
+                const res = await fetch('/api/aliases');
+                const data = await res.json();
+                const tbody = document.getElementById('aliasesListBody');
+                tbody.innerHTML = '';
+                if (!data.aliases || Object.keys(data.aliases).length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding: 20px; color: var(--text-muted);">No aliases set.</td></tr>';
+                    return;
+                }
+                for (const [name, path] of Object.entries(data.aliases)) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td><strong>${name}</strong></td>
+                        <td style="color: var(--text-muted); font-size: 13px;">${path}</td>
+                        <td style="text-align: right;">
+                            <button class="icon-btn" onclick="removeAlias('${name}')" style="color: #ef4444; border:none; padding:4px 8px;">Delete</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+            } catch (e) {
+                console.error("Error fetching aliases:", e);
+            }
+        }
+
+        async function addAlias(event) {
+            event.preventDefault();
+            const name = document.getElementById('aliasNameInput').value;
+            const path = document.getElementById('aliasPathInput').value;
+            try {
+                const res = await fetch('/api/aliases', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name, path})
+                });
+                if (res.ok) {
+                    document.getElementById('aliasNameInput').value = '';
+                    document.getElementById('aliasPathInput').value = '';
+                    fetchAliases();
+                }
+            } catch (e) {
+                console.error("Error adding alias:", e);
+            }
+        }
+
+        async function removeAlias(name) {
+            try {
+                const res = await fetch(`/api/aliases?name=${encodeURIComponent(name)}`, {
+                    method: 'DELETE'
+                });
+                if (res.ok) fetchAliases();
+            } catch (e) {
+                console.error("Error removing alias:", e);
+            }
+        }
     </script>
 </body>
 </html>

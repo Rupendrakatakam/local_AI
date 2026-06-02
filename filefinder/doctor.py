@@ -208,6 +208,8 @@ def check_dependencies():
         "PIL": "Image processing (Pillow)",
         "rapidfuzz": "Fuzzy search",
         "pynput": "Keyboard shortcuts (Global Hotkey)",
+        "markdown": "Markdown Rendering",
+        "tree_sitter": "Tree-sitter AST parsing",
     }
     for mod, label in deps.items():
         try:
@@ -232,12 +234,27 @@ def repair_fts():
             conn.execute("INSERT INTO files_fts(rowid, name, path) SELECT rowid, name, path FROM files")
             conn.execute("DELETE FROM name_trigrams")
             
-            rows = conn.execute("SELECT rowid, name FROM files").fetchall()
+            rows = conn.execute("SELECT rowid, name, path FROM files").fetchall()
             batch = []
-            for rid, name in rows:
+            symbol_batch = []
+            for rid, name, path_str in rows:
                 for tg in _generate_trigrams(name):
                     batch.append((tg, rid))
+                if path_str.endswith(('.py', '.js', '.ts', '.c', '.cpp', '.rs', '.go', '.java')):
+                    from indexer import _extract_symbols_treesitter
+                    from pathlib import Path
+                    for sym, kind in _extract_symbols_treesitter(Path(path_str)):
+                        symbol_batch.append((rid, sym, kind))
+
             conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", batch)
+            
+            conn.execute("DELETE FROM code_symbols")
+            if symbol_batch:
+                conn.executemany("INSERT INTO code_symbols (file_id, symbol, type) VALUES (?, ?, ?)", symbol_batch)
+                
+            conn.execute("DELETE FROM file_content_fts")
+            conn.execute("DELETE FROM embedding_hashes")
+            
             conn.commit()
             conn.close()
             total_files += len(rows)

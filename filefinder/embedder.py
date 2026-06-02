@@ -37,7 +37,7 @@ BATCH_SIZE = int(cfg("batch_size", 32))
 # ==============================================================================
 # Model Configuration (Modular for easy future upgrades)
 # ==============================================================================
-TEXT_EMBEDDING_MODEL = cfg("embedding_model", "all-MiniLM-L6-v2")
+TEXT_EMBEDDING_MODEL = cfg("embedding_model", "all-mpnet-base-v2")
 IMAGE_EMBEDDING_MODEL = cfg("image_model", "openai/clip-vit-base-patch32")
 # ==============================================================================
 

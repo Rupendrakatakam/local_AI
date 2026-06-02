@@ -1,0 +1,14 @@
+[Unit]
+Description=FileChat Global Hotkey Service
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/Rupendra/local_AI/filefinder/hotkey.py
+WorkingDirectory=%h/Rupendra/local_AI/filefinder
+Environment=DISPLAY=%E/DISPLAY
+Environment=XAUTHORITY=%h/.Xauthority
+
+[Install]
+WantedBy=graphical-session.target

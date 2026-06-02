@@ -20,12 +20,13 @@ _behavior_lock = threading.Lock()
 def _get_behavior_conn() -> sqlite3.Connection:
     global _behavior_conn, _behavior_init_done
     if _behavior_conn is None:
-        BEHAVIOR_DB.parent.mkdir(parents=True, exist_ok=True)
-        _behavior_conn = sqlite3.connect(BEHAVIOR_DB, check_same_thread=False)
-        if not _behavior_init_done:
-            with _behavior_lock:
-                _behavior_conn.execute("""
-                    CREATE TABLE IF NOT EXISTS opens (
+        with _behavior_lock:
+            if _behavior_conn is None:
+                BEHAVIOR_DB.parent.mkdir(parents=True, exist_ok=True)
+                _behavior_conn = sqlite3.connect(BEHAVIOR_DB, check_same_thread=False)
+                if not _behavior_init_done:
+                    _behavior_conn.execute("""
+                        CREATE TABLE IF NOT EXISTS opens (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         query TEXT,
                         path TEXT NOT NULL,

@@ -20,7 +20,6 @@ from suggestions import get_suggestions
 from db_utils import get_all_shard_paths
 import concurrent.futures
 
-DB_PATH    = Path.home() / ".local" / "share" / "filefinder" / "index.db"
 OLLAMA_URL = cfg("ollama_url", "http://localhost:11434/api/generate")
 MODEL      = cfg("ollama_model", "phi3:mini")
 CACHE_TTL  = float(cfg("cache_ttl_seconds", 30))
@@ -198,24 +197,86 @@ FALLBACK_SYNONYMS = {
     "ts": ["typescript"]
 }
 
+_vocab_embeddings = None
+_vocab_words = []
+_vocab_lock = threading.Lock()
+
+def _build_vocabulary_index():
+    if not cfg("synonym_expansion_enabled", True):
+        return
+    global _vocab_embeddings, _vocab_words
+    try:
+        from sentence_transformers import SentenceTransformer
+        import numpy as np
+        model = SentenceTransformer(cfg("embedding_model", "all-mpnet-base-v2"))
+        
+        shards = get_all_shard_paths()
+        word_freq = {}
+        for shard in shards:
+            try:
+                conn = sqlite3.connect(shard)
+                for row in conn.execute("SELECT name FROM files"):
+                    name = row[0]
+                    parts = re.split(r'[\s_\-\.]+', name)
+                    for p in parts:
+                        for sub_p in re.sub(r'([a-z])([A-Z])', r'\1 \2', p).split():
+                            w = sub_p.lower()
+                            if len(w) > 2:
+                                word_freq[w] = word_freq.get(w, 0) + 1
+                conn.close()
+            except Exception:
+                pass
+                
+        top_words = sorted(word_freq.keys(), key=lambda w: word_freq[w], reverse=True)[:5000]
+        if not top_words: return
+        
+        embeddings = model.encode(top_words, convert_to_numpy=True)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings_normalized = embeddings / norms
+        
+        with _vocab_lock:
+            _vocab_words = top_words
+            _vocab_embeddings = embeddings_normalized
+    except Exception:
+        pass
+
+# Start vocabulary builder in background
+threading.Thread(target=_build_vocabulary_index, daemon=True).start()
+
+def _embedding_synonyms(word: str) -> list[str]:
+    if not cfg("synonym_expansion_enabled", True):
+        return []
+    with _vocab_lock:
+        v_emb = _vocab_embeddings
+        v_words = _vocab_words
+    if v_emb is None:
+        return []
+    try:
+        from sentence_transformers import SentenceTransformer
+        import numpy as np
+        model = SentenceTransformer(cfg("embedding_model", "all-mpnet-base-v2"))
+        w_emb = model.encode([word], convert_to_numpy=True)
+        w_norm = np.linalg.norm(w_emb, axis=1, keepdims=True)
+        w_emb = w_emb / (w_norm + 1e-9)
+        
+        sims = np.dot(v_emb, w_emb.T).flatten()
+        top_indices = sims.argsort()[-4:][::-1]
+        
+        syns = []
+        for idx in top_indices:
+            sim = sims[idx]
+            if sim > 0.65 and v_words[idx] != word:
+                syns.append(v_words[idx])
+        return syns
+    except Exception:
+        return []
 
 @lru_cache(maxsize=512)
 def _get_synonyms(word: str) -> list[str]:
     """Return synonyms for a word (excluding the word itself). Cached for performance."""
-    syns = set()
-    try:
-        from nltk.corpus import wordnet
-        for syn in wordnet.synsets(word)[:3]:
-            for lemma in syn.lemmas()[:3]:
-                w = lemma.name().replace('_', ' ').lower()
-                if w != word:
-                    syns.add(w)
-    except ImportError:
-        pass
-        
+    syns = set(_embedding_synonyms(word))
     if word in FALLBACK_SYNONYMS:
         syns.update(FALLBACK_SYNONYMS[word])
-        
     return list(syns)
 
 
@@ -754,7 +815,12 @@ def _rerank(query_atoms: list[str], results: list[FileResult], requested_extensi
     for r in results:
         boost = boosts.get(r.path, 0.0)
         r.score = _score_result(query_atoms, r, requested_extensions, behavioral_boost=boost)
-    return sorted(results, key=lambda r: r.score, reverse=True)
+    sorted_results = sorted(results, key=lambda r: r.score, reverse=True)
+    try:
+        from reranker import rerank
+        return rerank(" ".join(query_atoms), sorted_results)
+    except ImportError:
+        return sorted_results
 
 
 # ── Ollama intent parser ──────────────────────────────────────────────────────
