@@ -207,6 +207,7 @@ def check_dependencies():
         "pystray": "System tray",
         "PIL": "Image processing (Pillow)",
         "rapidfuzz": "Fuzzy search",
+        "pynput": "Keyboard shortcuts (Global Hotkey)",
     }
     for mod, label in deps.items():
         try:

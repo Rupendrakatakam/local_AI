@@ -2,7 +2,13 @@
 hotkey.py — Global keyboard shortcut listener for FileChat.
 Press Ctrl+Space to open the FileChat search interface in the default browser.
 """
+import sys
+from pathlib import Path
 import webbrowser
+
+# Add current directory to path to ensure local imports work
+sys.path.insert(0, str(Path(__file__).parent))
+
 from pynput import keyboard
 from config_loader import get as cfg
 

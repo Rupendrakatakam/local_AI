@@ -611,7 +611,7 @@ def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
             res = conn.execute(
                 "SELECT name, path, extension, size, mtime FROM files "
                 "WHERE size > 0 AND length(name) >= 4 "
-                "ORDER BY mtime DESC LIMIT 50000"
+                "ORDER BY mtime DESC LIMIT 10000"
             ).fetchall()
             conn.close()
             return res
@@ -622,7 +622,7 @@ def _load_fuzzy_cache() -> list[tuple[str, str, str, str, int, float]]:
         all_rows.extend(f.result())
             
     all_rows.sort(key=lambda x: x[4], reverse=True)
-    rows = all_rows[:50000]
+    rows = all_rows[:10000]
 
     seen: set[str] = set()
     cache: list[tuple[str, str, str, str, int, float]] = []
@@ -676,17 +676,13 @@ def _fuzzy_search(query: str, limit: int = 15) -> list[FileResult]:
 
 # ── Sub-keyword expansion (Batch 4) ──────────────────────────────────────────
 def _generate_sub_keywords(atoms: list[str]) -> list[str]:
-    """Try splitting merged keywords into sub-words.
-
-    Example: 'online' → ['on', 'line'] (3+4 char split)
-    """
+    """Try splitting merged keywords into sub-words by separators."""
     expanded = list(atoms)
     for atom in atoms:
-        if len(atom) >= 6:
-            for i in range(3, len(atom) - 2):
-                left, right = atom[:i], atom[i:]
-                if len(left) >= 3 and len(right) >= 3:
-                    expanded.extend([left, right])
+        for sep in ['_', '-', '.']:
+            if sep in atom:
+                parts = [p for p in atom.split(sep) if len(p) >= 2]
+                expanded.extend(parts)
     return list(set(expanded))
 
 

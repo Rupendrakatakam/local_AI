@@ -21,7 +21,7 @@ sudo apt install -y python3-watchdog python3-rich python3-prompt-toolkit python3
 # 2. Install Phase 2–4 pip dependencies
 echo ""
 echo "▶ Installing Phase 2–4 pip dependencies..."
-pip install --quiet sentence-transformers lancedb pymupdf mammoth flask pystray pillow
+pip install --quiet sentence-transformers lancedb pymupdf mammoth flask pystray pillow pynput
 
 # 2b. Silence HuggingFace Hub warnings (model is cached locally)
 echo ""
