@@ -160,6 +160,33 @@ class EmbeddingPipeline:
         except ImportError:
             return None
 
+    def _extract_entities(self, path: str, text: str):
+        """Extract PERSON, ORG, DATE entities using spaCy and store in graph."""
+        try:
+            import spacy
+            try:
+                from knowledge_graph import KnowledgeGraph
+                kg = KnowledgeGraph()
+            except ImportError:
+                return
+                
+            if not hasattr(self, '_nlp'):
+                self._nlp = spacy.load("en_core_web_sm")
+                
+            doc = self._nlp(text[:100000]) # cap at 100k chars for NER to save time
+            
+            for ent in doc.ents:
+                if ent.label_ in {"PERSON", "ORG", "DATE"}:
+                    # Clean and normalize entity text
+                    entity_text = ent.text.strip().replace("\n", " ").lower()
+                    if len(entity_text) > 2 and len(entity_text) < 50:
+                        kg.add_contains_entity_edge(path, f"{ent.label_}:{entity_text}")
+                        
+        except ImportError:
+            pass # spaCy not installed, skip NER
+        except Exception as e:
+            log.debug("NER failed for %s: %s", path, e)
+
     # ── Text Extractors ──────────────────────────────────────────────────────
     def _extract_text_plain(self, path: str) -> str:
         """Extract plain text."""
@@ -494,6 +521,10 @@ class EmbeddingPipeline:
                     pass
 
             conn.close()
+            
+            # Phase I: NER Extraction
+            self._extract_entities(path, text)
+            
         except Exception as e:
             log.warning("Failed to save content/hash to sqlite: %s", e)
             
