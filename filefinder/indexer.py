@@ -16,6 +16,7 @@ import ast
 import hashlib
 import resource
 import threading
+import mimetypes
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -277,6 +278,63 @@ def _extract_symbols_treesitter(path: Path) -> list[tuple[str, str]]:
                 pass
         return []
 
+# ── Text Content Extraction ────────────────────────────────────────────────────
+def _extract_text_content(path: Path) -> str:
+    """Extract text content from a file for FTS indexing."""
+    try:
+        # Check file size - skip very large files
+        if path.stat().st_size > 10 * 1024 * 1024:  # 10MB limit
+            return ""
+        
+        ext = path.suffix.lower()
+        
+        # PDF
+        if ext == ".pdf":
+            try:
+                import fitz
+                doc = fitz.open(str(path))
+                pages = []
+                for page in doc:
+                    pages.append(page.get_text())
+                    if len(pages) >= 50:
+                        break
+                doc.close()
+                return "\n".join(pages)[:50000]
+            except ImportError:
+                return ""
+            except Exception:
+                return ""
+        
+        # DOCX/DOC
+        if ext in (".docx", ".doc"):
+            try:
+                import mammoth
+                with open(path, "rb") as f:
+                    result = mammoth.extract_raw_text(f)
+                    return result.value[:50000]
+            except ImportError:
+                return ""
+            except Exception:
+                return ""
+        
+        # Plain text files (code, markdown, etc.)
+        if ext in {
+            '.txt', '.md', '.rst', '.log', '.csv', '.json', '.yaml', '.yml', '.toml',
+            '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.scss', '.less',
+            '.cpp', '.c', '.h', '.hpp', '.cs', '.java', '.rs', '.go', '.rb', '.php',
+            '.swift', '.kt', '.scala', '.sh', '.bash', '.zsh', '.fish', '.ps1',
+            '.sql', '.xml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.properties',
+            '.dockerfile', '.gitignore', '.env', '.lock'
+        }:
+            try:
+                return path.read_text(encoding="utf-8", errors="replace")[:50000]
+            except Exception:
+                return ""
+        
+        return ""
+    except Exception:
+        return ""
+
 def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
     try:
         p = Path(path)
@@ -338,7 +396,13 @@ def upsert(path: str, ignore_patterns: list[str], commit: bool = True) -> None:
                 if symbols:
                     conn.executemany("INSERT INTO code_symbols (symbol, path, type) VALUES (?, ?, ?)",
                                      [(sym[0], str(p), sym[1]) for sym in symbols])
-                
+            
+            # Extract and index text content for content search
+            conn.execute("DELETE FROM file_content_fts WHERE rowid = ?", (rowid,))
+            content = _extract_text_content(p)
+            if content:
+                conn.execute("INSERT INTO file_content_fts(rowid, content) VALUES (?, ?)", (rowid, content))
+            
             if commit:
                 conn.commit()
             

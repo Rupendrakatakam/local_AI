@@ -755,9 +755,13 @@ def _score_result(query_atoms: list[str], result: FileResult, requested_extensio
     name_norm = _normalize_for_fuzzy(result.name)
     score = 0.0
 
-    # Keyword coverage (0–50 points)
+    # Keyword coverage (0–70 points) — INCREASED from 50
     matched = sum(1 for a in query_atoms if a in name_lower or a in name_norm)
-    score += (matched / max(len(query_atoms), 1)) * 50
+    score += (matched / max(len(query_atoms), 1)) * 70
+
+    # ALL keywords present bonus (30 points) — NEW: reward complete matches
+    if matched == len(query_atoms) and len(query_atoms) > 1:
+        score += 30
 
     # Path component keyword search / match bonus (0–10 points)
     path_parts = Path(result.path).parent.parts
@@ -770,11 +774,11 @@ def _score_result(query_atoms: list[str], result: FileResult, requested_extensio
     if query_atoms:
         score += (path_matched / len(query_atoms)) * 10
 
-    # Exact name match bonus (30 points)
+    # Exact name match bonus (50 points) — INCREASED from 30
     base_name_lower = Path(result.name).stem.lower()
     for a in query_atoms:
         if a == base_name_lower or a == name_lower:
-            score += 30
+            score += 50
             break
 
     # Prefix bonus (0–20 points) — filename starts with a query keyword
@@ -786,16 +790,16 @@ def _score_result(query_atoms: list[str], result: FileResult, requested_extensio
     # Name length penalty — shorter names more likely the target
     score += max(0, 15 - len(result.name) / 10)
 
-    # Recency bonus (0–15 points)
+    # Recency bonus (0–5 points) — REDUCED from 15
     days_old = (time.time() - result.mtime) / 86400
-    score += max(0, 15 - days_old / 30)
+    score += max(0, 5 - days_old / 60)
 
     # Path depth penalty (-2 points per directory level)
     depth = len(Path(result.path).parts) - 1
     score -= depth * 2
 
-    # Behavioral boost (Phase 3) — 0 to 40 points
-    score += behavioral_boost
+    # Behavioral boost (Phase 3) — CAPPED at 15 points (was 40)
+    score += min(behavioral_boost, 15.0)
 
     # Extension priority boost
     if requested_extensions and result.extension and result.extension.lower() in requested_extensions:
@@ -1076,7 +1080,7 @@ def _looks_like_filename(query: str) -> bool:
 
 
 def _needs_semantic(query: str) -> bool:
-    """Heuristic: use semantic search for abstract/NL queries."""
+    """Heuristic: use semantic search for multi-word abstract/NL queries."""
     words = query.split()
     if any(w.startswith("type:") for w in words):
         return False
@@ -1085,17 +1089,8 @@ def _needs_semantic(query: str) -> bool:
         return False
     if "." in query and " " not in query:
         return False
-    # Only trigger semantic for genuinely abstract/NL queries (3+ non-trivial words)
-    filler = {"find", "search", "locate", "show", "me", "my", "the", "a", "an",
-              "where", "is", "get", "can", "you"}
-    meaningful_words = [w for w in words if w.lower() not in filler]
-    if len(meaningful_words) >= 3:
-        return True
-    abstract_signals = {"about", "related", "similar", "like", "with",
-                        "containing", "regarding", "notes", "report", "what", "how"}
-    if any(w.lower() in abstract_signals for w in meaningful_words):
-        return True
-    return False
+    
+    return len(words) > 1
 
 
 # ── Exact name search (Tier 0) ────────────────────────────────────────────────
@@ -1195,6 +1190,9 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
       7. Fuzzy fallback (Batch 4)
     """
     stripped = query.strip()
+    
+    from query_classifier import classify_query, QueryType
+    q_type = classify_query(stripped)
 
     # Strip conversational command prefixes: "find X" → "X"
     stripped = _strip_command_prefix(stripped)
@@ -1307,11 +1305,24 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
                 atoms = _normalize_keywords([stripped])
                 return _rerank(atoms, results), False
 
-    # 2. Fast local intent extraction (no Ollama call)
+    # 2. Fast local intent extraction + LLM Intent parsing (Tier 2)
     intent = _parse_intent_local(stripped)
-    keywords = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
-    extension = intent.get("extension")
-    directory = _resolve_directory(intent.get("directory"))
+    
+    if q_type == QueryType.DESCRIPTIVE or (len(intent.get("keywords") or []) <= 2 and len(stripped.split()) > 2):
+        intent_llm = _parse_intent(stripped)
+        keywords_llm = intent_llm.get("keywords")
+        if keywords_llm:
+            keywords = keywords_llm
+            extension = intent_llm.get("extension") or intent.get("extension")
+            directory = _resolve_directory(intent_llm.get("directory")) or _resolve_directory(intent.get("directory"))
+        else:
+            keywords = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
+            extension = intent.get("extension")
+            directory = _resolve_directory(intent.get("directory"))
+    else:
+        keywords = intent.get("keywords") or [w for w in stripped.split() if len(w) >= 2]
+        extension = intent.get("extension")
+        directory = _resolve_directory(intent.get("directory"))
 
     extensions = category_extensions if category_extensions else ([extension] if extension else None)
 
@@ -1328,6 +1339,22 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
         
     keyword_results = _filter_and_clean(results)
     
+    # RESTRICTED synonym expansion: only expand if we got few results
+    if len(keyword_results) < 3:
+        expanded_atoms = []
+        for a in atoms:
+            syns = _get_synonyms(a)
+            if syns:
+                expanded_atoms.extend([a] + syns)
+            else:
+                expanded_atoms.append(a)
+        if len(expanded_atoms) > len(atoms):
+            # Re-search with expanded synonyms
+            results = _fts_search(expanded_atoms, extensions, directory, limit)
+            if not results:
+                results = _db_search(expanded_atoms, extensions, directory, limit)
+            keyword_results = _filter_and_clean(results)
+    
     # Priority 2: Pool relaxed results if an extension was requested AND no results found
     if extensions and not keyword_results:
         relaxed = _fts_search(keywords, None, directory, limit)
@@ -1339,14 +1366,16 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
                 keyword_results.append(r)
                 seen.add(r.path)
     
+    # ALWAYS run semantic search for multi-word queries (removed _needs_semantic gate)
     semantic_future = None
-    if _needs_semantic(stripped):
+    if len(stripped.split()) > 1:
         semantic_future = _shard_executor.submit(_semantic_search, stripped, extensions, limit)
 
+    # ALWAYS run content search in parallel for all multi-word queries
     content_results = []
     if content_query:
         content_results = _content_search(content_query, limit)
-    elif len(stripped.split()) > 1:
+    elif len(stripped.split()) >= 1:
         content_results = _content_search(stripped, limit)
         
     code_results = []
@@ -1395,7 +1424,10 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     results = _db_search(keywords, extensions, None, limit, use_or=True)
     results = _filter_and_clean(results)
     if results:
-        return _rerank(atoms, results), False
+        scored = _rerank(atoms, results)
+        good = [r for r in scored if r.score > 30]
+        if good:
+            return good, False
 
     # 6.5 Sub-keyword expansion — e.g. "online" → LIKE '%on%' AND '%line%'
     sub_kw = _generate_sub_keywords(atoms)
@@ -1415,24 +1447,7 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
     if results:
         return results, True
 
-    # 8. LLM Intent Fallback (Only run if local search yields 0 results)
-    intent_llm = _parse_intent(stripped)
-    keywords_llm = intent_llm.get("keywords")
-    if keywords_llm:
-        extension_llm = intent_llm.get("extension")
-        directory_llm = _resolve_directory(intent_llm.get("directory"))
-        extensions_llm = category_extensions if category_extensions else ([extension_llm] if extension_llm else None)
-        if category_extensions:
-            _, keywords_llm = _detect_category(keywords_llm)
-        atoms_llm = _normalize_keywords(keywords_llm)
-
-        results = _fts_search(keywords_llm, extensions_llm, directory_llm, limit)
-        if not results:
-            results = _db_search(keywords_llm, extensions_llm, directory_llm, limit)
-        keyword_results = _filter_and_clean(results)
-        if keyword_results:
-            return _rerank(atoms_llm, keyword_results, requested_extensions=extensions_llm), False
-
+    # 8. Removed LLM Fallback (now at Tier 2)
     return [], False
 
 

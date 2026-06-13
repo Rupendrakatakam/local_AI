@@ -19,10 +19,11 @@ class TestEmbedder:
         assert '.docx' in EMBEDDABLE_EXTS
         assert '.txt' in EMBEDDABLE_EXTS
         assert '.md' in EMBEDDABLE_EXTS
-        assert '.py' not in EMBEDDABLE_EXTS  # Code files excluded
+        assert '.py' in EMBEDDABLE_EXTS  # Code files now included for content search
         
         assert '.pdf' in PRIORITY_EXTS
         assert '.txt' in PRIORITY_EXTS
+        assert '.py' in PRIORITY_EXTS
     
     def test_chunk_text(self):
         """Test text chunking."""

@@ -22,13 +22,17 @@ os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(Path.home() / ".cache" /
 
 LANCEDB_PATH = Path.home() / ".local" / "share" / "filefinder" / "vectors"
 
-# EXTS: We focus only on documents and texts for now, per user request.
-# Code files are excluded from PRIORITY_EXTS to save initial embedding time.
+# EXTS: Expanded to include code files for content search
 EMBEDDABLE_EXTS = {
     '.txt', '.md', '.rst', '.log', '.csv', '.json', '.yaml', '.yml', '.toml',
-    '.pdf', '.docx', '.doc', '.rtf'
+    '.pdf', '.docx', '.doc', '.rtf',
+    '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.scss', '.less',
+    '.cpp', '.c', '.h', '.hpp', '.cs', '.java', '.rs', '.go', '.rb', '.php',
+    '.swift', '.kt', '.scala', '.sh', '.bash', '.zsh', '.fish', '.ps1',
+    '.sql', '.xml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.properties',
+    '.dockerfile', '.gitignore', '.env', '.lock'
 }
-PRIORITY_EXTS = {'.pdf', '.docx', '.doc', '.txt', '.md'}
+PRIORITY_EXTS = {'.pdf', '.docx', '.doc', '.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx'}
 
 CHUNK_SIZE = int(cfg("chunk_size", 400))
 CHUNK_OVERLAP = int(cfg("chunk_overlap", 80))

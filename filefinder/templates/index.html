@@ -3,639 +3,491 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="FileChat — AI-powered local file search assistant">
-    <title>FileChat</title>
-    <!-- Use Google Fonts -->
+    <meta name="description" content="FileChat — Retro Terminal AI File Assistant">
+    <title>FileChat Terminal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;500;600;700&family=VT323&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/xt256.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style>
         :root {
-            /* Dark Mode (Default) */
-            --bg: #050508;
-            --surface: rgba(20, 20, 25, 0.6);
-            --surface-hover: rgba(40, 40, 50, 0.7);
-            --border: rgba(255, 255, 255, 0.08);
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --accent-cyan: #00e5ff;
-            --accent-purple: #b39ddb;
-            --glass-blur: blur(24px);
-            --focus-ring: 0 0 0 2px rgba(0, 229, 255, 0.4), 0 0 16px rgba(0, 229, 255, 0.2);
-        }
-
-        [data-theme="light"] {
-            --bg: #f8fafc;
-            --surface: rgba(255, 255, 255, 0.85);
-            --surface-hover: rgba(255, 255, 255, 1);
-            --border: rgba(0, 0, 0, 0.08);
-            --text-main: #0f172a;
-            --text-muted: #64748b;
-            --accent-cyan: #0284c7;
-            --accent-purple: #7c3aed;
-            --focus-ring: 0 0 0 2px rgba(2, 132, 199, 0.4), 0 0 16px rgba(2, 132, 199, 0.1);
-        }
-        
-        [data-theme="monokai"] {
-            --bg: #272822;
-            --surface: rgba(62, 61, 50, 0.85);
-            --surface-hover: rgba(73, 72, 62, 1);
-            --border: rgba(255, 255, 255, 0.1);
-            --text-main: #f8f8f2;
-            --text-muted: #75715e;
-            --accent-cyan: #a6e22e;
-            --accent-purple: #fd971f;
-            --focus-ring: 0 0 0 2px rgba(166, 226, 46, 0.4), 0 0 16px rgba(166, 226, 46, 0.1);
-        }
-
-        [data-theme="nord"] {
-            --bg: #2e3440;
-            --surface: rgba(59, 66, 82, 0.85);
-            --surface-hover: rgba(67, 76, 94, 1);
-            --border: rgba(216, 222, 233, 0.1);
-            --text-main: #eceff4;
-            --text-muted: #d8dee9;
-            --accent-cyan: #88c0d0;
-            --accent-purple: #b48ead;
-            --focus-ring: 0 0 0 2px rgba(136, 192, 208, 0.4), 0 0 16px rgba(136, 192, 208, 0.1);
-        }
-
-        [data-theme="gruvbox"] {
-            --bg: #282828;
-            --surface: rgba(60, 56, 54, 0.85);
-            --surface-hover: rgba(80, 73, 69, 1);
-            --border: rgba(235, 219, 178, 0.1);
-            --text-main: #ebdbb2;
-            --text-muted: #a89984;
-            --accent-cyan: #8ec07c;
-            --accent-purple: #d3869b;
-            --focus-ring: 0 0 0 2px rgba(142, 192, 124, 0.4), 0 0 16px rgba(142, 192, 124, 0.1);
+            /* Authentic 16-color retro palette */
+            --bg: #000000;
+            --text: #aaaaaa;
+            --text-bright: #ffffff;
+            --text-dim: #555555;
+            --primary: #00aaaa; 
+            --primary-bright: #00ffff;
+            --success: #00aa00;
+            --success-bright: #55ff55;
+            --warning: #aa5500;
+            --warning-bright: #ffff55;
+            --danger: #aa0000;
+            --danger-bright: #ff5555;
+            --panel-bg: #000088;
+            --panel-border: #aaaaaa;
         }
 
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: 'Inter', sans-serif;
-        }
-
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--border);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-muted);
         }
 
         body {
             background-color: var(--bg);
-            color: var(--text-main);
+            color: var(--text-bright);
+            font-family: 'VT323', monospace;
+            font-size: 20px;
             height: 100vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            transition: background-color 0.3s ease;
+            position: relative;
         }
 
-        /* Top Bar */
+        /* CRT Scanlines */
+        body::after {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 9999;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+
+        /* Typography */
+        h1, h2, h3, .pixel-font {
+            font-family: 'Pixelify Sans', sans-serif;
+            text-transform: uppercase;
+            font-weight: normal;
+        }
+        
+        h1 { font-size: 32px; color: var(--warning-bright); text-shadow: 2px 2px 0px #000; }
+        h2 { font-size: 24px; color: var(--primary-bright); margin-bottom: 15px; }
+        h3 { font-size: 20px; color: var(--primary-bright); margin-bottom: 10px; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 14px; height: 14px; }
+        ::-webkit-scrollbar-track { background: var(--bg); border-left: 2px solid var(--panel-border); }
+        ::-webkit-scrollbar-thumb { background: var(--primary); border: 2px solid var(--panel-border); }
+
+        /* UI Elements */
+        input, select {
+            font-family: 'VT323', monospace;
+            font-size: 20px;
+            background: var(--bg);
+            color: var(--primary-bright);
+            border: 2px solid var(--primary);
+            padding: 8px 12px;
+            outline: none;
+        }
+        input:focus {
+            background: #002222;
+            border-color: var(--primary-bright);
+        }
+        
+        button {
+            font-family: 'Pixelify Sans', sans-serif;
+            font-size: 16px;
+            cursor: pointer;
+            background: var(--text);
+            color: #000;
+            border: 2px solid;
+            border-color: #ffffff #555555 #555555 #ffffff;
+            padding: 6px 12px;
+            text-transform: uppercase;
+        }
+        button:active {
+            border-color: #555555 #ffffff #ffffff #555555;
+            transform: translate(1px, 1px);
+        }
+        button:hover { background: var(--text-bright); }
+        
+        .icon-btn {
+            background: transparent;
+            border: none;
+            color: var(--primary-bright);
+            text-transform: uppercase;
+            font-size: 18px;
+            padding: 6px 10px;
+        }
+        .icon-btn:hover {
+            background: var(--primary);
+            color: #000;
+        }
+        .icon-btn:active {
+            transform: none;
+            background: var(--primary-bright);
+        }
+
+        /* Layout */
         header {
-            padding: 24px;
+            padding: 10px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            background: var(--panel-bg);
+            border-bottom: 2px solid var(--panel-border);
         }
 
-        h1 {
-            font-size: 24px;
-            font-weight: 700;
-            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
+        .controls { display: flex; gap: 10px; }
 
-        .controls {
-            display: flex;
-            gap: 16px;
-        }
-
-        .icon-btn {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text-main);
-            border-radius: 8px;
-            padding: 8px 12px;
-            cursor: pointer;
-            backdrop-filter: var(--glass-blur);
-            transition: all 0.2s ease;
-            font-size: 14px;
-            font-weight: 500;
-        }
-        
-        .icon-btn:hover {
-            background: var(--surface-hover);
-            transform: translateY(-1px);
-        }
-
-        /* Main Container */
         .container {
             display: flex;
             flex: 1;
             overflow: hidden;
-            padding: 0 24px 24px 24px;
-            gap: 24px;
+            padding: 20px;
+            gap: 20px;
         }
 
-        /* Search & Results Panel */
-        .search-panel {
+        .tab-content {
             flex: 1;
             display: flex;
             flex-direction: column;
-            gap: 16px;
-            transition: flex 0.3s ease;
+            gap: 15px;
         }
 
+        /* Search */
         .search-box {
-            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .prompt-arrow {
+            font-size: 24px;
+            color: var(--primary-bright);
+            font-weight: bold;
+        }
+        #searchInput {
+            flex: 1;
+            background: #000;
         }
 
-        .search-box input {
-            width: 100%;
-            padding: 16px 48px 16px 20px;
-            font-size: 18px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            color: var(--text-main);
-            backdrop-filter: var(--glass-blur);
-            transition: all 0.2s ease;
-            outline: none;
+        .status-bar {
+            color: var(--text);
+            padding: 5px;
+            border-bottom: 2px dashed var(--text-dim);
         }
 
-        .search-box input:focus {
-            border-color: var(--accent-cyan);
-            box-shadow: var(--focus-ring);
-        }
-
-        .search-box .shortcut-hint {
-            position: absolute;
-            right: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-muted);
-            font-size: 12px;
-            background: rgba(0,0,0,0.2);
-            padding: 4px 8px;
-            border-radius: 4px;
-            pointer-events: none;
-        }
-
-        /* Results Table */
+        /* Tables */
         .results-container {
             flex: 1;
             overflow-y: auto;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            backdrop-filter: var(--glass-blur);
+            border: 2px solid var(--panel-border);
+            background: var(--bg);
         }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
+        table { width: 100%; border-collapse: collapse; }
         th {
             text-align: left;
-            padding: 12px 16px;
-            color: var(--text-muted);
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            border-bottom: 1px solid var(--border);
+            padding: 10px;
+            background: var(--panel-bg);
+            color: var(--text-bright);
+            font-family: 'Pixelify Sans', sans-serif;
+            border-bottom: 2px solid var(--panel-border);
             position: sticky;
             top: 0;
-            background: var(--bg);
             z-index: 10;
         }
+        td {
+            padding: 10px;
+            border-bottom: 1px dashed var(--text-dim);
+            cursor: pointer;
+        }
+        tr:hover { background: #002222; }
+        tr.selected { background: var(--primary); color: #000; }
+        
+        .file-name { display: flex; align-items: center; gap: 10px; }
+        .file-path { color: var(--text); font-size: 16px; }
+        tr.selected .file-path { color: #000; }
+        
+        .confidence-indicator { width: 10px; height: 10px; display: inline-block; }
+        .conf-high { background-color: var(--success-bright); }
+        .conf-med  { background-color: var(--warning-bright); }
+        .conf-low  { background-color: var(--danger-bright); }
+        
+        .preview-content img {
+            max-width: 100%;
+            image-rendering: pixelated;
+        }
 
-        tr {
-            transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        /* Panels & Modals */
+        .pixel-panel {
+            border: 2px solid var(--panel-border);
+            background: #000;
+            padding: 15px;
+        }
+        
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: var(--panel-bg);
+            border: 4px double var(--panel-border);
+            padding: 20px;
+            box-shadow: 10px 10px 0px #000;
             position: relative;
         }
-
-        tr:hover, tr.selected {
-            background: var(--surface-hover);
-        }
-
-        td {
-            padding: 12px 16px;
-            font-size: 14px;
-            border-bottom: 1px solid var(--border);
-            cursor: pointer;
-            transition: padding-left 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        tr:hover td:first-child, tr.selected td:first-child {
-            padding-left: 20px;
-        }
-
-        .file-name {
+        .modal-header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 12px;
-            font-weight: 500;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--panel-border);
+            padding-bottom: 10px;
         }
-        
-        .file-path {
-            color: var(--text-muted);
-            font-size: 12px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 300px;
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--danger-bright);
+            font-family: 'VT323', monospace;
+            font-size: 24px;
         }
-
-        /* Confidence Bar (Update 59) */
-        .confidence-indicator {
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            transition: width 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        tr:hover .confidence-indicator, tr.selected .confidence-indicator {
-            width: 4px;
-            box-shadow: 0 0 8px currentColor;
-        }
-        
-        .conf-high { background-color: #10b981; }
-        .conf-med  { background-color: #f59e0b; }
-        .conf-low  { background-color: #ef4444; }
+        .close-btn:hover { background: var(--danger); color: #fff; }
 
         /* Preview Panel */
         .preview-panel {
             width: 0;
             opacity: 0;
             overflow: hidden;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            backdrop-filter: var(--glass-blur);
+            background: #000;
+            border: 2px solid var(--panel-border);
             display: flex;
             flex-direction: column;
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            transform: translateX(20px);
+            transition: width 0.1s;
         }
-
-        .preview-panel.active {
-            width: 40%;
-            opacity: 1;
-            transform: translateX(0);
-        }
-
+        .preview-panel.active { width: 40%; opacity: 1; }
         .preview-header {
-            padding: 16px;
-            border-bottom: 1px solid var(--border);
+            padding: 10px;
+            background: var(--panel-bg);
+            border-bottom: 2px solid var(--panel-border);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-
         .preview-title {
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            font-family: 'Pixelify Sans', sans-serif;
+            color: var(--warning-bright);
         }
-
         .preview-content {
-            padding: 16px;
+            padding: 15px;
             flex: 1;
             overflow-y: auto;
-            font-size: 13px;
-            line-height: 1.5;
-            color: var(--text-muted);
+            color: var(--text-bright);
         }
-
-        .preview-content pre {
-            white-space: pre-wrap;
-            font-family: monospace;
-        }
-
+        .preview-content pre { font-family: 'VT323', monospace; white-space: pre-wrap; }
         .preview-content img {
             max-width: 100%;
-            border-radius: 8px;
+            height: auto;
+            image-rendering: pixelated;
+            border: 2px solid var(--panel-border);
+        }
+        .preview-content video,
+        .preview-content audio {
+            max-width: 100%;
+            border: 2px solid var(--panel-border);
+        }
+        .preview-content table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .preview-content th,
+        .preview-content td {
+            border: 1px solid var(--panel-border);
+            padding: 4px 8px;
+            text-align: left;
+        }
+        .preview-content th {
+            background: var(--panel-bg);
+            color: var(--text-bright);
+            font-family: 'Pixelify Sans', sans-serif;
         }
 
-        .btn-open {
-            background: var(--accent-cyan);
-            color: #000;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: opacity 0.2s;
-        }
-        
-        .btn-open:hover { opacity: 0.8; }
+        /* Lists */
+        .retro-list { list-style-type: square; padding-left: 20px; }
+        .retro-list li { margin-bottom: 8px; border-bottom: 1px dashed var(--text-dim); padding-bottom: 5px; }
 
-        .status-bar {
-            color: var(--text-muted);
-            font-size: 13px;
-            padding-left: 4px;
-        }
-
-        /* Analytics Modal */
-        .modal-overlay {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.5);
-            backdrop-filter: blur(4px);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        
-        .modal-content {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            width: 800px;
-            max-width: 90vw;
-            max-height: 90vh;
-            padding: 24px;
-            overflow-y: auto;
-            position: relative;
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-        }
-
-        .analytics-grid {
+        /* Grid */
+        .grid-list {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-            margin-bottom: 24px;
-        }
-
-        .analytics-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-        }
-
-        .analytics-card h3 {
-            font-size: 14px;
-            color: var(--text-muted);
-            margin-bottom: 12px;
-            text-transform: uppercase;
-        }
-
-        .analytics-list {
-            list-style: none;
-        }
-
-        .analytics-list li {
-            font-size: 13px;
-            padding: 8px 0;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-        }
-        
-        .analytics-list li:last-child {
-            border-bottom: none;
-        }
-        
-        .analytics-item-name {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 80%;
-        }
-        
-        .analytics-item-count {
-            color: var(--accent-cyan);
-            font-weight: 600;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
         }
     </style>
 </head>
 <body>
     <header>
-        <h1>FileChat</h1>
+        <h1>[FILE_CHAT]</h1>
         <div class="controls">
-            <button class="icon-btn" onclick="switchTab('searchTab')">🔍 Search</button>
-            <button class="icon-btn" onclick="switchTab('graphTab')">🕸 Graph</button>
-            <button class="icon-btn" id="btn-aliases" onclick="openAliases()">🏷️ Aliases</button>
-            <button class="icon-btn" onclick="openAnalytics()">📈 Analytics</button>
-            <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">📁 Smart Folders</button>
-            <button class="icon-btn" id="btn-chat" onclick="openChat()">💬 Chat Assistant</button>
-            <button class="icon-btn" id="btn-duplicates" onclick="fetchDuplicates()">🔍 Find Duplicates</button>
-            <button class="icon-btn" id="btn-stats" onclick="fetchStats()">📊 Stats</button>
-            <select class="icon-btn" id="themeSelect" onchange="setTheme(this.value)">
-                <option value="dark">🌓 Dark</option>
-                <option value="light">☀️ Light</option>
-                <option value="monokai">🎨 Monokai</option>
-                <option value="nord">❄️ Nord</option>
-                <option value="gruvbox">📦 Gruvbox</option>
-            </select>
+            <button class="icon-btn" onclick="switchTab('searchTab')">[SEARCH]</button>
+            <button class="icon-btn" onclick="switchTab('graphTab')">[GRAPH]</button>
+            <button class="icon-btn" id="btn-aliases" onclick="openAliases()">[ALIASES]</button>
+            <button class="icon-btn" onclick="openAnalytics()">[STATS]</button>
+            <button class="icon-btn" id="btn-smart-folders" onclick="fetchSmartFolders()">[SMART_DIR]</button>
+            <button class="icon-btn" id="btn-chat" onclick="openChat()">[AI_CHAT]</button>
+            <button class="icon-btn" id="btn-duplicates" onclick="fetchDuplicates()">[DUPES]</button>
+            <!-- Removing theme selector since we are full retro now, replaced with just a status label -->
+            <span style="color: var(--success-bright); font-family: 'VT323'; line-height: 36px; margin-left: 10px;" id="statusText">V1.0.0</span>
         </div>
     </header>
 
     <div class="container">
+        <!-- Search Tab -->
         <div id="searchTab" class="tab-content">
             <div class="search-box">
-                <input type="text" id="searchInput" placeholder="Search files, contents, or use /alias..." autocomplete="off">
-                <div class="shortcut-hint">/</div>
+                <span class="prompt-arrow">&gt;</span>
+                <input type="text" id="searchInput" placeholder="ENTER QUERY OR /ALIAS..." autocomplete="off">
             </div>
-            <div class="status-bar" id="statusBar">Ready. Type to search.</div>
+            <div class="status-bar" id="statusBar">SYS.READY</div>
             
-            <div id="briefingContainer" style="display: none; background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--accent-green); padding: 15px; margin: 20px 0; border-radius: 4px; position: relative;">
-                <button onclick="document.getElementById('briefingContainer').style.display='none'" style="position: absolute; right: 10px; top: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer;">✕</button>
-                <h3 style="margin-top: 0; color: var(--accent-green);">🌅 Good Morning</h3>
-                <div id="briefingContent" style="color: var(--text); line-height: 1.5; font-size: 14px;"></div>
+            <div id="briefingContainer" class="pixel-panel" style="display: none; border-color: var(--success); margin: 10px 0; position: relative;">
+                <button class="close-btn" style="position:absolute; right:10px; top:10px;" onclick="document.getElementById('briefingContainer').style.display='none'">[X]</button>
+                <h3 style="color: var(--success-bright);">SYS.MSG: MORNING_BRIEFING</h3>
+                <div id="briefingContent" style="color: var(--text-bright);"></div>
             </div>
             
-            <table class="results-table" id="resultsTable">
+            <div class="results-container">
+                <table id="resultsTable">
                     <thead>
                         <tr>
-                            <th style="width: 40px;"></th>
-                            <th>Name</th>
-                            <th>Path</th>
-                            <th style="width: 100px;">Size</th>
-                            <th style="width: 150px;">Modified</th>
+                            <th style="width: 40px;">STS</th>
+                            <th>NAME</th>
+                            <th>PATH</th>
+                            <th style="width: 100px;">SIZE</th>
+                            <th style="width: 150px;">MODIFIED</th>
                         </tr>
                     </thead>
-                    <tbody id="resultsBody">
-                        <!-- Results will go here -->
-                    </tbody>
+                    <tbody id="resultsBody"></tbody>
                 </table>
-                
-                <div id="predictionsContainer" style="margin-top: 30px; display: none;">
-                    <h3 style="color: var(--accent-cyan); border-bottom: 1px solid var(--border); padding-bottom: 10px;">Predicted Files for You</h3>
-                    <div id="predictionsList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-top: 15px;"></div>
-                </div>
+            </div>
+
+            <div id="predictionsContainer" style="margin-top: 10px; display: none;">
+                <h3 style="color: var(--primary); border-bottom: 2px dashed var(--primary); padding-bottom: 5px;">PREDICTED_TARGETS</h3>
+                <div id="predictionsList" class="grid-list"></div>
             </div>
         </div>
 
         <!-- Graph Tab -->
         <div id="graphTab" class="tab-content" style="display: none;">
-            <div class="dashboard-header">
-                <h2>Knowledge Graph</h2>
-                <div class="search-box">
-                    <span class="search-icon">🔍</span>
-                    <input type="text" id="graphSearchInput" placeholder="Search node to center..." style="width: 300px;">
-                    <button class="btn" onclick="rebuildGraph()">Rebuild Graph</button>
+            <div class="dashboard-header" style="display:flex; justify-content:space-between; align-items:center;">
+                <h2 style="margin:0;">KNOWLEDGE_GRAPH</h2>
+                <div class="search-box" style="flex:1; margin-left:20px; display:flex;">
+                    <span class="prompt-arrow" style="padding:0 10px;">&gt;</span>
+                    <input type="text" id="graphSearchInput" placeholder="FIND_NODE..." style="width: 300px;">
+                    <button onclick="rebuildGraph()">[REBUILD]</button>
                 </div>
             </div>
-            
-            <div id="graphContainer" style="width: 100%; height: calc(100vh - 120px); border: 1px solid var(--border); border-radius: 8px; background: var(--bg-dark);"></div>
+            <div id="graphContainer" style="width: 100%; height: calc(100vh - 150px); border: 2px solid var(--panel-border); background: #000;"></div>
         </div>
 
+        <!-- Preview Panel -->
         <div class="preview-panel" id="previewPanel">
             <div class="preview-header">
-                <div class="preview-title" id="previewTitle">Preview</div>
+                <div class="preview-title" id="previewTitle">PREVIEW.DAT</div>
                 <div>
-                    <button class="btn-open" id="btnOpenSelected">Open</button>
-                    <button class="icon-btn" onclick="closePreview()" style="margin-left: 8px; border:none;">✕</button>
+                    <button id="btnOpenSelected" style="background:var(--success-bright);">[EXECUTE]</button>
+                    <button onclick="closePreview()" style="background:var(--danger-bright);">[CLOSE]</button>
                 </div>
             </div>
             <div class="preview-content" id="previewContent">
-                Select a file to preview
+                AWAITING INPUT...
             </div>
         </div>
     </div>
 
-    <!-- Smart Folders Modal -->
+    <!-- Modals -->
     <div class="modal-overlay" id="smartFoldersModal" onclick="if(event.target===this) closeSmartFolders()">
-        <div class="modal-content" style="max-width: 800px; max-height: 85vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2>Smart Folder Suggestions</h2>
-                <button class="icon-btn" onclick="closeSmartFolders()" style="border:none;">✕</button>
-            </div>
-            <div id="smartFoldersContent" style="color: #e2e8f0; line-height: 1.6; font-size: 15px;">
-                <div style="text-align: center; padding: 40px;">
-                    <p style="margin-top: 15px; color: #94a3b8;">Analyzing your folders... This may take up to a minute.</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Duplicates Modal -->
-    <div class="modal-overlay" id="duplicatesModal" onclick="if(event.target===this) closeDuplicates()">
-        <div class="modal-content" style="max-width: 800px; max-height: 85vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2>Duplicate Files Detected</h2>
-                <button class="icon-btn" onclick="closeDuplicates()" style="border:none;">✕</button>
-            </div>
-            <div id="duplicatesContent" style="color: #e2e8f0; line-height: 1.6; font-size: 14px;">
-                <div style="text-align: center; padding: 40px;">
-                    <p style="margin-top: 15px; color: #94a3b8;">Scanning for duplicates...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Chat Modal -->
-    <div class="modal-overlay" id="chatModal" onclick="if(event.target===this) closeChat()">
-        <div class="modal-content" style="max-width: 600px; height: 80vh; display: flex; flex-direction: column;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">
-                <h2 style="margin: 0; font-size: 1.25rem;">💬 FileChat Assistant</h2>
-                <button class="icon-btn" onclick="closeChat()" style="border:none;">✕</button>
-            </div>
-            
-            <div id="chatHistory" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; padding-right: 10px; margin-bottom: 15px;">
-                <!-- Chat messages go here -->
-                <div style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
-                    Hello! I'm your local FileChat assistant. I can see what files you've opened and searched for recently. How can I help?
-                </div>
-            </div>
-            
-            <form id="chatForm" onsubmit="submitChat(event)" style="display: flex; gap: 10px; border-top: 1px solid var(--border); padding-top: 15px;">
-                <input type="text" id="chatInput" placeholder="Ask about your recent files..." autocomplete="off" style="flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-main); outline: none;">
-                <button type="submit" style="background: var(--accent-cyan); color: #000; border: none; padding: 0 20px; border-radius: 20px; font-weight: 600; cursor: pointer;">Send</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Aliases Modal -->
-    <div class="modal-overlay" id="aliasesModal" onclick="if(event.target===this) closeAliases()">
-        <div class="modal-content">
+        <div class="modal-content" style="width:800px;">
             <div class="modal-header">
-                <h2>Manage Aliases</h2>
-                <button class="icon-btn" onclick="closeAliases()" style="border:none;">✕</button>
+                <h2>SMART_DIR_SUGGESTIONS</h2>
+                <button class="close-btn" onclick="closeSmartFolders()">[X]</button>
             </div>
-            
-            <form id="addAliasForm" onsubmit="addAlias(event)" style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <input type="text" id="aliasNameInput" class="chat-input" placeholder="Alias Name (e.g. docs)" required style="flex: 1; min-width: 150px;">
-                <input type="text" id="aliasPathInput" class="chat-input" placeholder="Target Path (/path/to/file_or_dir)" required style="flex: 2;">
-                <button type="submit" style="background: var(--accent-cyan); color: #000; border: none; padding: 0 20px; border-radius: 20px; font-weight: 600; cursor: pointer;">Add</button>
+            <div id="smartFoldersContent"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="duplicatesModal" onclick="if(event.target===this) closeDuplicates()">
+        <div class="modal-content" style="width:800px; max-height:85vh; overflow-y:auto;">
+            <div class="modal-header">
+                <h2>DUPLICATE_FILES_DETECTED</h2>
+                <button class="close-btn" onclick="closeDuplicates()">[X]</button>
+            </div>
+            <div id="duplicatesContent"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="chatModal" onclick="if(event.target===this) closeChat()">
+        <div class="modal-content" style="width:600px; height:80vh; display:flex; flex-direction:column;">
+            <div class="modal-header">
+                <h2>AI_ASSISTANT_UPLINK</h2>
+                <button class="close-btn" onclick="closeChat()">[X]</button>
+            </div>
+            <div id="chatHistory" style="flex:1; overflow-y:auto; padding:15px; border:2px solid var(--panel-border); background:#000; margin-bottom:15px; display:flex; flex-direction:column; gap:10px;">
+                <div style="color:var(--success-bright);">[SYS] AI LINK ESTABLISHED. HOW CAN I HELP?</div>
+            </div>
+            <form id="chatForm" onsubmit="submitChat(event)" style="display:flex; gap:10px; align-items:center;">
+                <span style="color:var(--primary-bright); font-size:24px;">&gt;</span>
+                <input type="text" id="chatInput" placeholder="INPUT QUERY..." autocomplete="off" style="flex:1;">
+                <button type="submit" style="background:var(--primary-bright);">[SEND]</button>
             </form>
-            
-            <table style="width: 100%;">
-                <thead>
-                    <tr>
-                        <th style="width: 25%">Name</th>
-                        <th style="width: 60%">Target Path</th>
-                        <th style="width: 15%; text-align: right;">Action</th>
-                    </tr>
-                </thead>
-                <tbody id="aliasesListBody">
-                </tbody>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="aliasesModal" onclick="if(event.target===this) closeAliases()">
+        <div class="modal-content" style="width:800px;">
+            <div class="modal-header">
+                <h2>ALIAS_CONFIG</h2>
+                <button class="close-btn" onclick="closeAliases()">[X]</button>
+            </div>
+            <form id="addAliasForm" onsubmit="addAlias(event)" style="display:flex; gap:10px; margin-bottom:20px;">
+                <input type="text" id="aliasNameInput" placeholder="ALIAS_NAME" required style="width:200px;">
+                <input type="text" id="aliasPathInput" placeholder="TARGET_PATH" required style="flex:1;">
+                <button type="submit" style="background:var(--primary-bright);">[ADD]</button>
+            </form>
+            <table style="width:100%;">
+                <thead><tr><th style="width:25%">NAME</th><th style="width:60%">TARGET_PATH</th><th style="width:15%">ACTION</th></tr></thead>
+                <tbody id="aliasesListBody"></tbody>
             </table>
         </div>
     </div>
 
-    <!-- Analytics Modal -->
     <div class="modal-overlay" id="analyticsModal" onclick="if(event.target===this) closeAnalytics()">
-        <div class="modal-content">
+        <div class="modal-content" style="width:900px; max-height:90vh; overflow-y:auto;">
             <div class="modal-header">
-                <h2>Search History Analytics</h2>
-                <button class="icon-btn" onclick="closeAnalytics()" style="border:none;">✕</button>
+                <h2>SYS_ANALYTICS</h2>
+                <button class="close-btn" onclick="closeAnalytics()">[X]</button>
             </div>
-            
-            <div class="analytics-card" style="margin-bottom: 24px;">
-                <h3>Hourly Activity Trend</h3>
+            <div class="pixel-panel" style="margin-bottom:20px;">
+                <h3>HOURLY_ACTIVITY</h3>
                 <canvas id="hourlyChart" height="80"></canvas>
             </div>
-            
-            <div class="analytics-grid">
-                <div class="analytics-card">
-                    <h3>Top Searched Queries</h3>
-                    <ul class="analytics-list" id="topQueriesList"></ul>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px;">
+                <div class="pixel-panel">
+                    <h3>TOP_QUERIES</h3>
+                    <ul class="retro-list" id="topQueriesList" style="margin:0;"></ul>
                 </div>
-                <div class="analytics-card">
-                    <h3>Most Opened Files</h3>
-                    <ul class="analytics-list" id="topFilesList"></ul>
+                <div class="pixel-panel">
+                    <h3>TOP_FILES</h3>
+                    <ul class="retro-list" id="topFilesList" style="margin:0;"></ul>
                 </div>
             </div>
-            
-            <div class="analytics-card" style="margin-bottom: 24px; text-align: center;">
-                <h3>Storage Breakdown</h3>
-                <div style="width: 250px; height: 250px; margin: 0 auto;">
+            <div class="pixel-panel" style="text-align:center;">
+                <h3>STORAGE_ALLOCATION</h3>
+                <div style="width:250px; height:250px; margin:0 auto;">
                     <canvas id="storageChart"></canvas>
                 </div>
             </div>
@@ -672,13 +524,13 @@
                         const name = p.path.split('/').pop() || p.path;
                         const confPercent = Math.round(p.confidence * 100);
                         return `
-                            <div class="analytics-card" style="cursor: pointer; padding: 15px;" onclick="openFile('\${p.path.replace(/'/g, "\\'")}')">
+                            <div class="pixel-panel" style="cursor: pointer;" onclick="openFile('${p.path.replace(/'/g, "\\'")}')">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                    <strong style="color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80%;">\${escapeHtml(name)}</strong>
-                                    <span style="font-size: 0.8em; color: \${p.confidence > 0.8 ? 'var(--accent-green)' : 'var(--accent-orange)'};">\${confPercent}% likely</span>
+                                    <strong style="color: var(--primary-bright); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80%;">${escapeHtml(name)}</strong>
+                                    <span style="font-size: 0.8em; color: ${p.confidence > 0.8 ? 'var(--success-bright)' : 'var(--warning-bright)'};">[${confPercent}%]</span>
                                 </div>
                                 <div style="font-size: 0.8em; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    \${escapeHtml(p.path)}
+                                    ${escapeHtml(p.path)}
                                 </div>
                             </div>
                         `;
@@ -935,7 +787,7 @@
                             html += '<tr>';
                             row.forEach(cell => {
                                 const tag = i === 0 ? 'th' : 'td';
-                                html += `<${tag} style="border:1px solid var(--border); padding:6px; text-align:left; color:var(--text-main); background:${i===0 ? 'var(--surface-hover)' : 'transparent'};">${escapeHtml(String(cell))}</${tag}>`;
+                                html += `<${tag} style="border:1px solid var(--panel-border); padding:6px; text-align:left; color:var(--text-bright); background:${i===0 ? 'var(--primary)' : 'transparent'};">${escapeHtml(String(cell))}</${tag}>`;
                             });
                             html += '</tr>';
                         });
@@ -1047,14 +899,14 @@
                     totalWasted += dupe.wasted_size;
                     const wastedMB = (dupe.wasted_size / (1024 * 1024)).toFixed(2);
                     html += `
-                        <div style="background: var(--surface); padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid var(--border);">
-                            <h3 style="color: var(--accent-cyan); margin: 0 0 10px 0;">Duplicate Group (${dupe.count} files) <span style="color: var(--accent-red); font-size: 0.9em; float: right;">-${wastedMB} MB wasted</span></h3>
-                            <ul style="margin: 0; padding-left: 20px; list-style-type: none;">
+                        <div class="pixel-panel" style="margin-bottom: 15px;">
+                            <h3 style="color: var(--warning-bright); margin: 0 0 10px 0;">DUPLICATE_GROUP [${dupe.count}] <span style="color: var(--danger-bright); font-size: 0.9em; float: right;">-${wastedMB} MB WASTED</span></h3>
+                            <ul class="retro-list" style="margin: 0;">
                     `;
                     dupe.files.forEach(f => {
                         html += `<li style="margin-bottom: 5px; word-break: break-all;">
-                                   <span style="color: var(--text-dim); margin-right: 10px;">📄</span>
-                                   <a href="javascript:void(0)" onclick="openFile('${f.path.replace(/'/g, "\\'")}')" style="color: var(--text); text-decoration: underline;">${escapeHtml(f.path)}</a>
+                                   <span style="color: var(--text-dim); margin-right: 10px;">&gt;</span>
+                                   <a href="javascript:void(0)" onclick="openFile('${f.path.replace(/'/g, "\\'")}')" style="color: var(--primary-bright); text-decoration: underline;">${escapeHtml(f.path)}</a>
                                  </li>`;
                     });
                     html += `</ul></div>`;
@@ -1090,8 +942,8 @@
 
             // Append user message
             history.innerHTML += `
-                <div style="align-self: flex-end; background: var(--accent-cyan); color: #000; padding: 12px 16px; border-radius: 12px; border-bottom-right-radius: 4px; max-width: 85%; line-height: 1.5; font-weight: 500;">
-                    ${escapeHtml(msg)}
+                <div style="align-self: flex-end; color: var(--primary-bright); padding: 5px 0;">
+                    &gt; ${escapeHtml(msg)}
                 </div>
             `;
             input.value = '';
@@ -1099,8 +951,8 @@
             // Add loading indicator
             const loadingId = 'loading-' + Date.now();
             history.innerHTML += `
-                <div id="${loadingId}" style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; color: var(--text-muted);">
-                    Thinking...
+                <div id="${loadingId}" style="align-self: flex-start; color: var(--text-dim); padding: 5px 0;">
+                    [SYS] PROCESSING...
                 </div>
             `;
             history.scrollTop = history.scrollHeight;
@@ -1128,15 +980,15 @@
                 });
 
                 history.innerHTML += `
-                    <div style="align-self: flex-start; background: var(--surface-hover); padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
-                        ${htmlReply}
+                    <div style="align-self: flex-start; color: var(--success-bright); padding: 5px 0;">
+                        [SYS] ${htmlReply}
                     </div>
                 `;
             } catch (err) {
                 if (document.getElementById(loadingId)) document.getElementById(loadingId).remove();
                 history.innerHTML += `
-                    <div style="align-self: flex-start; background: rgba(239, 68, 68, 0.1); color: #ef4444; padding: 12px 16px; border-radius: 12px; border-bottom-left-radius: 4px; max-width: 85%; line-height: 1.5;">
-                        Error: ${escapeHtml(err.message)}
+                    <div style="align-self: flex-start; color: var(--danger-bright); padding: 5px 0;">
+                        [ERR] ${escapeHtml(err.message)}
                     </div>
                 `;
             }
@@ -1178,8 +1030,8 @@
                         datasets: [{
                             label: 'Activity',
                             data: data.hourly,
-                            backgroundColor: 'var(--accent-cyan)',
-                            borderColor: 'var(--accent-cyan)',
+                            backgroundColor: '#00ffff',
+                            borderColor: '#00aaaa',
                             borderWidth: 1,
                             borderRadius: 4
                         }]
@@ -1188,8 +1040,8 @@
                         responsive: true,
                         plugins: { legend: { display: false } },
                         scales: {
-                            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8', stepSize: 1 } },
-                            x: { grid: { display: false }, ticks: { color: '#94a3b8', maxRotation: 45 } }
+                            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#00ffff', stepSize: 1, font: {family: 'VT323'} } },
+                            x: { grid: { display: false }, ticks: { color: '#00ffff', maxRotation: 45, font: {family: 'VT323'} } }
                         }
                     }
                 });
@@ -1203,8 +1055,8 @@
                     if (storageChartInstance) storageChartInstance.destroy();
                     
                     const colors = [
-                        '#00e5ff', '#b39ddb', '#10b981', '#f59e0b', '#ef4444', 
-                        '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#64748b'
+                        '#00ffff', '#ff00ff', '#00ff00', '#ffff00', '#ff0000', 
+                        '#0000ff', '#ff5555', '#5555ff', '#55ff55', '#ffff55', '#aaaaaa'
                     ];
                     
                     storageChartInstance = new Chart(sCtx, {
@@ -1221,7 +1073,7 @@
                             responsive: true,
                             maintainAspectRatio: false,
                             plugins: {
-                                legend: { position: 'right', labels: { color: '#94a3b8' } },
+                                legend: { position: 'right', labels: { color: '#00ffff', font: {family: 'VT323'} } },
                                 tooltip: {
                                     callbacks: {
                                         label: function(context) {
@@ -1312,9 +1164,9 @@
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
                         <td><strong>${name}</strong></td>
-                        <td style="color: var(--text-muted); font-size: 13px;">${path}</td>
+                        <td style="color: var(--text); font-size: 13px;">${path}</td>
                         <td style="text-align: right;">
-                            <button class="icon-btn" onclick="removeAlias('${name}')" style="color: #ef4444; border:none; padding:4px 8px;">Delete</button>
+                            <button class="btn" onclick="removeAlias('${name}')" style="color: var(--danger-bright);">[DEL]</button>
                         </td>
                     `;
                     tbody.appendChild(tr);

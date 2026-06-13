@@ -173,12 +173,15 @@ def api_preview():
         except Exception as e:
             return jsonify({"type": "error", "content": f"Could not read text: {e}"})
             
-    # PDF preview: Return first page text
+    # PDF preview: Return first 3 pages text (up to 5000 chars)
     if ext == ".pdf":
         try:
             import fitz
             doc = fitz.open(path)
-            content = doc[0].get_text()[:1000] if len(doc) > 0 else "No text found on first page."
+            pages_text = []
+            for i in range(min(3, len(doc))):
+                pages_text.append(doc[i].get_text())
+            content = "\n\n--- PAGE {} ---\n\n".format(i+1).join(pages_text)[:5000]
             return jsonify({
                 "type": "pdf", 
                 "pages": len(doc), 
@@ -188,6 +191,23 @@ def api_preview():
             return jsonify({"type": "error", "content": "PyMuPDF not installed for PDF previews."})
         except Exception as e:
             return jsonify({"type": "error", "content": f"Failed to read PDF: {e}"})
+            
+    # DOCX preview: Return document text
+    if ext in (".docx", ".doc"):
+        try:
+            import mammoth
+            with open(path, "rb") as f:
+                result = mammoth.extract_raw_text(f)
+                content = result.value[:5000]
+            return jsonify({
+                "type": "text", 
+                "content": content, 
+                "extension": ext.lstrip(".")
+            })
+        except ImportError:
+            return jsonify({"type": "error", "content": "python-mammoth not installed for DOCX previews (pip install mammoth)."})
+        except Exception as e:
+            return jsonify({"type": "error", "content": f"Failed to read DOCX: {e}"})
             
     return jsonify({"type": "unknown", "content": f"No preview available for {ext} files."})
 

@@ -1,5 +1,5 @@
 {
-    "watch_path": "/home/rupendra/Rupendra/local_AI",
+    "watch_path": "~",
     "db_path": "~/.local/share/filefinder/index.db",
     "ollama_url": "http://localhost:11434/api/generate",
     "ollama_model": "phi3:mini",
