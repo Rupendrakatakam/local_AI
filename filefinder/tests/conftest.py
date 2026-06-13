@@ -50,3 +50,16 @@ def populated_db(temp_db):
     conn.close()
     
     yield temp_db
+
+
+@pytest.fixture(autouse=True)
+def reset_search_state():
+    """Reset search module global state before each test."""
+    import search
+    # Ensure hidden files toggle is OFF by default
+    if search._show_hidden:
+        search.toggle_hidden()
+    yield
+    # Clean up after test
+    if search._show_hidden:
+        search.toggle_hidden()

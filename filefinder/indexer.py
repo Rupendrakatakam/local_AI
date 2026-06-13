@@ -137,7 +137,10 @@ def get_db(path: str) -> sqlite3.Connection:
         if key in _db_pool:
             return _db_pool[key]
             
-        shard_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shard_path.parent.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            pass
         try:
             os.chmod(str(shard_path.parent), 0o700)
         except OSError:

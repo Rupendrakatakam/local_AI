@@ -24,7 +24,7 @@ def test_upsert(populated_db):
     test_path = '/tmp/test_file.txt'
     
     with patch('os.stat', return_value=MockStat()), \
-         patch('os.path.isfile', return_value=True), \
+         patch('pathlib.Path.is_file', return_value=True), \
          patch('indexer.is_ignored', return_value=False), \
          patch('indexer.get_shard_path', return_value=Path(populated_db)):
         

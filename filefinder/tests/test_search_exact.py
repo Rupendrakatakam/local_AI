@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import search
+import os
 
 
 def test_exact_search(populated_db):
@@ -46,7 +47,8 @@ def test_hidden_files_included_when_toggled(populated_db):
     """Test hidden files are included when toggle is on."""
     search.toggle_hidden()
     try:
-        with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]):
+        with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]), \
+             patch('search.os.path.exists', return_value=True):
             res, fuzzy = search.search('hidden', limit=10)
             assert len(res) == 1
             assert res[0].name == '.hidden_file'
@@ -56,7 +58,8 @@ def test_hidden_files_included_when_toggled(populated_db):
 
 def test_type_filter(populated_db):
     """Test type: filter syntax."""
-    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]):
+    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]), \
+         patch('search.os.path.exists', return_value=True):
         res, fuzzy = search.search('type:code', limit=10)
         assert len(res) == 1
         assert res[0].extension == 'py'

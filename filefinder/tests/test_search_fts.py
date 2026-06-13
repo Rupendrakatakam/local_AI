@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import search
+import os
 
 
 def test_fts_search(populated_db):
@@ -17,7 +18,8 @@ def test_fts_search(populated_db):
     conn.commit()
     conn.close()
     
-    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]):
+    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]), \
+         patch('search.os.path.exists', return_value=True):
         res, fuzzy = search.search('report', limit=10)
         assert len(res) >= 1
         assert any(r.name == 'report.pdf' for r in res)
@@ -30,7 +32,8 @@ def test_fts_search_partial_match(populated_db):
     conn.commit()
     conn.close()
     
-    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]):
+    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]), \
+         patch('search.os.path.exists', return_value=True):
         res, fuzzy = search.search('repor', limit=10)
         # FTS5 prefix matching
         assert len(res) >= 1
@@ -43,7 +46,8 @@ def test_fts_search_with_extension_filter(populated_db):
     conn.commit()
     conn.close()
     
-    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]):
+    with patch('search.get_all_shard_paths', return_value=[Path(populated_db)]), \
+         patch('search.os.path.exists', return_value=True):
         res, fuzzy = search.search('type:document', limit=10)
         assert len(res) == 1
         assert res[0].extension == 'pdf'

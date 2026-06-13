@@ -33,10 +33,11 @@ _shard_executor = concurrent.futures.ThreadPoolExecutor(
 )
 
 # Update 70: Query result cache
-_query_cache: dict[str, tuple[float, list, bool]] = {}
+# Key is (query, show_hidden) tuple to account for hidden files toggle
+_query_cache: dict[tuple[str, bool], tuple[float, list, bool]] = {}
 _cache_lock = threading.Lock()
 
-def _cache_get(key: str):
+def _cache_get(key: tuple[str, bool]):
     with _cache_lock:
         if key in _query_cache:
             ts, results, fuzzy = _query_cache[key]
@@ -45,7 +46,7 @@ def _cache_get(key: str):
             del _query_cache[key]
         return None
 
-def _cache_set(key: str, results, fuzzy):
+def _cache_set(key: tuple[str, bool], results, fuzzy):
     with _cache_lock:
         if len(_query_cache) > 200:
             oldest = min(_query_cache, key=lambda k: _query_cache[k][0])
@@ -1156,14 +1157,15 @@ def search(query: str, limit: int = 15) -> tuple[list[FileResult], bool]:
     except Exception:
         pass
 
-    cached = _cache_get(stripped)
+    cache_key = (stripped, _show_hidden)
+    cached = _cache_get(cache_key)
     if cached:
         return cached
 
     result = _search_uncached(stripped, limit)
 
     _cache_set(
-        stripped,
+        cache_key,
         result[0],
         result[1]
     )
@@ -1326,8 +1328,8 @@ def _search_uncached(query: str, limit: int = 15) -> tuple[list[FileResult], boo
         
     keyword_results = _filter_and_clean(results)
     
-    # Priority 2: Pool relaxed results if an extension was requested
-    if extensions:
+    # Priority 2: Pool relaxed results if an extension was requested AND no results found
+    if extensions and not keyword_results:
         relaxed = _fts_search(keywords, None, directory, limit)
         if not relaxed:
             relaxed = _db_search(keywords, None, directory, limit)
