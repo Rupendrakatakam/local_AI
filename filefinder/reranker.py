@@ -1,5 +1,4 @@
 import os
-import pickle
 import sqlite3
 import numpy as np
 from pathlib import Path
@@ -15,8 +14,16 @@ class RerankerModel:
     def _load(self):
         if RERANKER_MODEL_PATH.exists():
             try:
+                import joblib
                 with open(RERANKER_MODEL_PATH, "rb") as f:
-                    self.model = pickle.load(f)
+                    self.model = joblib.load(f)
+            except ImportError:
+                try:
+                    import json
+                    with open(RERANKER_MODEL_PATH.with_suffix('.json'), "r") as f:
+                        self.model = json.load(f)
+                except Exception:
+                    pass
             except Exception:
                 pass
                 

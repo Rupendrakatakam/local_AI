@@ -1,0 +1,34 @@
+# FileChat dependencies
+# Generated from setup.sh
+
+# System packages (via apt):
+# python3-watchdog
+# python3-rich
+# python3-prompt-toolkit
+# python3-requests
+
+# Python packages (via pip):
+watchdog
+rich
+prompt-toolkit
+requests
+sentence-transformers
+lancedb
+pymupdf
+mammoth
+flask
+flask-socketio
+pystray
+pillow
+pynput
+markdown
+rapidfuzz
+tree-sitter
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-c
+tree-sitter-rust
+tree-sitter-go
+tree-sitter-java
+pytest

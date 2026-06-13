@@ -96,23 +96,22 @@ class KnowledgeGraph:
 
     def find_related(self, path: str, depth: int = 2) -> List[Dict[str, Any]]:
         if not self.conn: return []
-        # A simple BFS using duckdb. For depth 2:
         res = self.conn.execute("""
             WITH RECURSIVE bfs AS (
-                SELECT target, edge_type, 1 AS depth FROM edges WHERE source = ?
+                SELECT target, edge_type, 1 AS depth, ARRAY[source] AS visited FROM edges WHERE source = ?
                 UNION
-                SELECT source, edge_type, 1 AS depth FROM edges WHERE target = ?
+                SELECT source, edge_type, 1 AS depth, ARRAY[target] AS visited FROM edges WHERE target = ?
                 UNION
-                SELECT e.target, e.edge_type, b.depth + 1
+                SELECT e.target, e.edge_type, b.depth + 1, list_append(b.visited, e.source)
                 FROM edges e JOIN bfs b ON e.source = b.target
-                WHERE b.depth < ?
+                WHERE b.depth < ? AND NOT list_contains(b.visited, e.source)
                 UNION
-                SELECT e.source, e.edge_type, b.depth + 1
+                SELECT e.source, e.edge_type, b.depth + 1, list_append(b.visited, e.target)
                 FROM edges e JOIN bfs b ON e.target = b.source
-                WHERE b.depth < ?
+                WHERE b.depth < ? AND NOT list_contains(b.visited, e.target)
             )
-            SELECT DISTINCT target, edge_type, depth FROM bfs LIMIT 100
-        """, (path, path, depth, depth)).fetchall()
+            SELECT DISTINCT target, edge_type, depth FROM bfs WHERE target != ? LIMIT 100
+        """, (path, path, depth, depth, path)).fetchall()
         
         return [{"node": r[0], "edge_type": r[1], "depth": r[2]} for r in res]
 

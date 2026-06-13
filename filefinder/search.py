@@ -502,13 +502,13 @@ def _trigram_search_single(db_path: Path, query: str, limit: int = 15) -> list[F
         JOIN files ON files.rowid = name_trigrams.file_id
         WHERE name_trigrams.trigram IN ({placeholders}) AND files.size > 0 {hidden_clause}
         GROUP BY name_trigrams.file_id
-        HAVING similarity >= {cfg('trigram_threshold', 0.45)}
+        HAVING similarity >= ?
         ORDER BY similarity DESC, files.mtime DESC
         LIMIT ?
     """
     
     try:
-        params = [len(q_trigrams)] + q_trigrams + [limit]
+        params = [len(q_trigrams)] + q_trigrams + [float(cfg('trigram_threshold', 0.45)), limit]
         rows = conn.execute(query_str, params).fetchall()
         results = [FileResult(path=r["path"], name=r["name"], extension=r["extension"],
                               size=r["size"], mtime=r["mtime"]) for r in rows]

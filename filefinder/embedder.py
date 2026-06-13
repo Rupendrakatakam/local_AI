@@ -61,6 +61,7 @@ class EmbeddingPipeline:
         self._tag_queue = queue.Queue(maxsize=500)
         self._stop_event = threading.Event()
         self._progress = {"total": 0, "done": 0, "errors": 0}
+        self._progress_lock = threading.Lock()
 
     # ── Database ─────────────────────────────────────────────────────────────
     def _get_db(self):
@@ -348,19 +349,21 @@ class EmbeddingPipeline:
             try:
                 # Use timeout to prevent complete deadlock if queue is full
                 self._queue.put((priority, path, mtime), timeout=5)
-                self._progress["total"] += 1
+                with self._progress_lock:
+                    self._progress["total"] += 1
             except Exception:
                 log.warning("Embedding queue full, dropping %s", path)
             
     def get_progress(self) -> dict:
-        total = max(1, self._progress["total"])
-        return {
-            "queued": self._queue.qsize(),
-            "done": self._progress["done"],
-            "total": self._progress["total"],
-            "errors": self._progress["errors"],
-            "pct": round(100 * self._progress["done"] / total, 1),
-        }
+        with self._progress_lock:
+            total = max(1, self._progress["total"])
+            return {
+                "queued": self._queue.qsize(),
+                "done": self._progress["done"],
+                "total": self._progress["total"],
+                "errors": self._progress["errors"],
+                "pct": round(100 * self._progress["done"] / total, 1),
+            }
 
     def start_worker(self):
         """Starts background worker if not running."""
@@ -426,10 +429,12 @@ class EmbeddingPipeline:
                 
             try:
                 self._embed_file(path, mtime)
-                self._progress["done"] += 1
+                with self._progress_lock:
+                    self._progress["done"] += 1
             except Exception as e:
                 log.debug("Embed failed for %s: %s", path, e)
-                self._progress["errors"] += 1
+                with self._progress_lock:
+                    self._progress["errors"] += 1
                 
             try:
                 # Throttle if system load is high

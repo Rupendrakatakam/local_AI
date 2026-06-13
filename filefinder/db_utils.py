@@ -44,6 +44,10 @@ def get_all_shard_paths() -> list[Path]:
         shards.append(legacy)
     return shards
 
+def get_data_dir() -> Path:
+    """Return the base data directory for filefinder."""
+    return BASE_DIR
+
 def init_shard(conn) -> None:
     """Initialize a new SQLite shard connection with required PRAGMAs and tables."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -63,7 +67,7 @@ def init_shard(conn) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name, path,
             content='files', content_rowid='rowid',
-            tokenize='unicode61 separators "_-."'
+            tokenize='unicode61'
         )
     """)
     
@@ -131,7 +135,7 @@ def init_shard(conn) -> None:
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS code_symbols USING fts5(
             symbol, path, type,
-            tokenize='unicode61 separators "_-."'
+            tokenize='unicode61'
         )
     """)
     

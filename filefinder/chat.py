@@ -14,7 +14,7 @@ import subprocess
 import threading
 import requests
 from pathlib import Path
-from search import search, db_stats, FileResult, toggle_hidden, get_show_hidden, DB_PATH
+from search import search, db_stats, FileResult, toggle_hidden, get_show_hidden
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel

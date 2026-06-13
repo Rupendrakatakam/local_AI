@@ -70,7 +70,20 @@ def tool_search_files(query, limit=20, file_type=None):
     res, fuzzy = do_search(query, limit=limit)
     return [{"path": r.path, "name": r.name, "score": r.score} for r in res]
 
+def _validate_path(path: str) -> bool:
+    from pathlib import Path
+    try:
+        from config_loader import get as cfg
+        watch_path = Path(cfg("watch_path", "~")).expanduser().resolve()
+        resolved = Path(path).resolve()
+        resolved.relative_to(watch_path)
+        return True
+    except (ValueError, RuntimeError):
+        return False
+
 def tool_get_file_content(path):
+    if not _validate_path(path):
+        return {"error": "Access denied: path outside watch_path"}
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return {"content": f.read(10000)} # limit to 10k chars

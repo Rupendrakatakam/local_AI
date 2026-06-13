@@ -244,13 +244,13 @@ def repair_fts():
                     from indexer import _extract_symbols_treesitter
                     from pathlib import Path
                     for sym, kind in _extract_symbols_treesitter(Path(path_str)):
-                        symbol_batch.append((rid, sym, kind))
+                        symbol_batch.append((sym, path_str, kind))
 
             conn.executemany("INSERT INTO name_trigrams (trigram, file_id) VALUES (?, ?)", batch)
             
             conn.execute("DELETE FROM code_symbols")
             if symbol_batch:
-                conn.executemany("INSERT INTO code_symbols (file_id, symbol, type) VALUES (?, ?, ?)", symbol_batch)
+                conn.executemany("INSERT INTO code_symbols (symbol, path, type) VALUES (?, ?, ?)", symbol_batch)
                 
             conn.execute("DELETE FROM file_content_fts")
             conn.execute("DELETE FROM embedding_hashes")

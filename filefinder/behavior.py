@@ -19,39 +19,41 @@ _behavior_lock = threading.Lock()
 
 def _get_behavior_conn() -> sqlite3.Connection:
     global _behavior_conn, _behavior_init_done
-    if _behavior_conn is None:
-        with _behavior_lock:
-            if _behavior_conn is None:
-                BEHAVIOR_DB.parent.mkdir(parents=True, exist_ok=True)
-                _behavior_conn = sqlite3.connect(BEHAVIOR_DB, check_same_thread=False)
-                if not _behavior_init_done:
-                    _behavior_conn.execute("""
-                        CREATE TABLE IF NOT EXISTS opens (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        query TEXT,
-                        path TEXT NOT NULL,
-                        timestamp REAL NOT NULL
-                    )
-                """)
-                _behavior_conn.execute("""
-                    CREATE TABLE IF NOT EXISTS copies (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        path TEXT NOT NULL,
-                        timestamp REAL NOT NULL
-                    )
-                """)
-                _behavior_conn.execute("""
-                    CREATE TABLE IF NOT EXISTS searches (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        query TEXT NOT NULL,
-                        result_count INTEGER,
-                        timestamp REAL NOT NULL
-                    )
-                """)
-                _behavior_conn.execute("CREATE INDEX IF NOT EXISTS idx_opens_path ON opens(path)")
-                _behavior_conn.execute("CREATE INDEX IF NOT EXISTS idx_copies_path ON copies(path)")
-                _behavior_conn.commit()
-                _behavior_init_done = True
+    if _behavior_conn is not None:
+        return _behavior_conn
+    with _behavior_lock:
+        if _behavior_conn is not None:
+            return _behavior_conn
+        BEHAVIOR_DB.parent.mkdir(parents=True, exist_ok=True)
+        _behavior_conn = sqlite3.connect(BEHAVIOR_DB, check_same_thread=False)
+        if not _behavior_init_done:
+            _behavior_conn.execute("""
+                CREATE TABLE IF NOT EXISTS opens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT,
+                    path TEXT NOT NULL,
+                    timestamp REAL NOT NULL
+                )
+            """)
+            _behavior_conn.execute("""
+                CREATE TABLE IF NOT EXISTS copies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT NOT NULL,
+                    timestamp REAL NOT NULL
+                )
+            """)
+            _behavior_conn.execute("""
+                CREATE TABLE IF NOT EXISTS searches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    result_count INTEGER,
+                    timestamp REAL NOT NULL
+                )
+            """)
+            _behavior_conn.execute("CREATE INDEX IF NOT EXISTS idx_opens_path ON opens(path)")
+            _behavior_conn.execute("CREATE INDEX IF NOT EXISTS idx_copies_path ON copies(path)")
+            _behavior_conn.commit()
+            _behavior_init_done = True
     return _behavior_conn
 
 

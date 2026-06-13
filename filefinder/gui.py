@@ -83,6 +83,13 @@ def api_open():
     if not path or not os.path.exists(path):
         return jsonify({"ok": False, "error": "File not found"}), 404
         
+    try:
+        watch_path = Path(cfg("watch_path", "~")).expanduser().resolve()
+        resolved = Path(path).resolve()
+        resolved.relative_to(watch_path)
+    except (ValueError, RuntimeError):
+        return jsonify({"ok": False, "error": "Access denied"}), 403
+        
     # Open file asynchronously
     subprocess.Popen(["xdg-open", path])
     
